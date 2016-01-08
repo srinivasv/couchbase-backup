@@ -1,0 +1,22 @@
+  private def data() = {
+    val k11: CouchbaseShortRecord = new CouchbaseShortRecord(0, 1, "k1",
+      CouchbaseShortRecord.Type.INSERT)
+    val k22: CouchbaseShortRecord = new CouchbaseShortRecord(0, 2, "k2",
+      CouchbaseShortRecord.Type.INSERT)
+    val k13: CouchbaseShortRecord = new CouchbaseShortRecord(0, 3, "k1",
+      CouchbaseShortRecord.Type.INSERT)
+    val k34: CouchbaseShortRecord = new CouchbaseShortRecord(0, 4, "k3",
+      CouchbaseShortRecord.Type.INSERT)
+    val keys = env.sparkCtx.makeRDD(List(k11, k22, k13, k34)).map(
+      k => (k.key(), k))
+
+    keys.saveAsSequenceFile(
+      "/Users/srinivas/workspace/couch/couchbase-backup/src/main/resources/" +
+      "compaction/l0/filter.meta")
+    /*
+    val res = env.sparkCtx.sequenceFile[Text, CouchbaseShortRecord](
+      "/Users/srinivas/workspace/couch/couchbase-backup/src/main/resources/" +
+      "compaction/l0/filter.meta").map(x => (x._1.toString(), x._2.toString()))
+    res.collect().map(x => System.out.println("dbg: " + x._1 + " " + x._2))
+    */
+  }
