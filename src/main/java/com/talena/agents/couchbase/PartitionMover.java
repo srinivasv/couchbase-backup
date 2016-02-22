@@ -18,6 +18,8 @@ import java.util.List;
 import java.util.Map;
 
 import rx.functions.Action1;
+import rx.functions.Func1;
+import rx.observables.MathObservable;
 
 public class PartitionMover {
   private final String[] nodes;
@@ -112,6 +114,14 @@ public class PartitionMover {
           System.out.println(stats);
         }
       });
+
+    System.out.println(MathObservable.sumLong(dcp.stats()
+      .map(new Func1<PartitionStats, Long>() {
+        @Override
+        public Long call(PartitionStats s) {
+          return s.stats().get(PartitionStats.Stat.NUM_MUTATIONS);
+        }
+      })).single().toBlocking().first());
 
     return changes;
   }
