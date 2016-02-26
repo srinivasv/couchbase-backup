@@ -8,6 +8,14 @@ import scala.util.Failure
 import scala.util.Success
 import scala.util.Try
 
+case class LevelProps(psid: String, level: Level, location: String,
+  format: FileFormat)
+
+sealed abstract class Level
+case object Level0 extends Level
+case object Level1 extends Level
+case object Level2 extends Level
+
 object CompactorApp extends App {
   def logError(msg: String): Unit = {
     System.err.println(msg)
@@ -20,17 +28,17 @@ object CompactorApp extends App {
 
     val l0Row = props.select("pset.id", "pset.l0.location", "pset.l0.format")
       .collect()(0)
-    val l0Props = LevelProps(v(l0Row, "id").toString(), L0,
+    val l0Props = LevelProps(v(l0Row, "id").toString(), Level0,
       v(l0Row, "location").toString(), CSV)
 
     val l1Row = props.select("pset.id", "pset.l1.location", "pset.l1.format")
       .collect()(0)
-    val l1Props = LevelProps(v(l1Row, "id").toString(), L1,
+    val l1Props = LevelProps(v(l1Row, "id").toString(), Level1,
       v(l1Row, "location").toString(), CSV)
 
     val l2Row = props.select("pset.id", "pset.l2.location", "pset.l2.format")
       .collect()(0)
-    val l2Props = LevelProps(v(l2Row, "id").toString(), L2,
+    val l2Props = LevelProps(v(l2Row, "id").toString(), Level2,
       v(l2Row, "location").toString(), CSV)
 
     List(l0Props, l1Props, l2Props)
@@ -109,11 +117,11 @@ object CompactorApp extends App {
   def openMStore(props: LevelProps): MStore = {
     println("Initializing props: " + props)
     (props.level, getMData(props))  match {
-      case (L0, Some(mdata)) => L0(props.psid, props.location, mdata)
-      case (L0, None) => throw new IllegalArgumentException(
+      case (Level0, Some(mdata)) => L0(props.psid, props.location, mdata)
+      case (Level0, None) => throw new IllegalArgumentException(
         "L0 location may not be empty");
-      case (L1, mdata) => L1(props.psid, props.location, mdata)
-      case (L2, mdata) => L2(props.psid, props.location, mdata)
+      case (Level1, mdata) => L1(props.psid, props.location, mdata)
+      case (Level2, mdata) => L2(props.psid, props.location, mdata)
     }
   }
 

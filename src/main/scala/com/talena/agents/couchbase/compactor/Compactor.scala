@@ -11,6 +11,7 @@ class Compactor(sqlCtx: SQLContext, l0: L0, l1: L1, l2: L2) {
         .groupBy($"pid", $"key")
         .max("seqno")
         .toDF("pid", "key", "seqno")
+      case _ => throw new IllegalStateException("Not supported")
     }
   }
 
