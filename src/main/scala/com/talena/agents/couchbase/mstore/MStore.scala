@@ -133,14 +133,3 @@ object MStore {
     }
   }
 }
-
-/*
-TODO
-incorporate schema in MDataClass case classes
-fix json parsing
-use format to build dataframes
-refactor verifyLocation and verifyFiles
-create utils
-expand and store glob of mutation files
-logging
-*/

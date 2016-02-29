@@ -1,0 +1,6 @@
+TODO
+fix json parsing
+use format to build dataframes
+refactor verifyLocation and verifyFiles
+expand and store glob of mutation files
+logging
