@@ -5,7 +5,7 @@ import org.apache.spark.{SparkConf, SparkContext}
 import org.apache.spark.sql.{DataFrame, Row, SQLContext}
 
 sealed trait MStore {
-  def dedupeFilter() = {
+  def dedupeFilter(): MStore = {
     this match {
       case L0(MData(mutations, Filter(filter, source), failoverLog), props) =>
         import props.env.sqlCtx.implicits._
@@ -15,6 +15,14 @@ sealed trait MStore {
           .toDF("pid", "key", "seqno"), source), failoverLog), props)
       case _ => this
     }
+  }
+
+  def applyFilter(): MStore = {
+    this
+  }
+
+  def updateFilter(other: MStore): MStore = {
+    this
   }
 }
 
