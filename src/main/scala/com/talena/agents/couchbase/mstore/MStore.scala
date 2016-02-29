@@ -7,13 +7,12 @@ import org.apache.spark.sql.{DataFrame, Row, SQLContext}
 sealed trait MStore {
   def dedupeFilter() = {
     this match {
-      case L0(MData(mutations, Filter(filter, file, format), failoverLog),
-        props) =>
+      case L0(MData(mutations, Filter(filter, source), failoverLog), props) =>
         import props.env.sqlCtx.implicits._
         L0(MData(mutations, Filter(filter
           .groupBy($"pid", $"key")
           .max("seqno")
-          .toDF("pid", "key", "seqno"), file, format), failoverLog), props)
+          .toDF("pid", "key", "seqno"), source), failoverLog), props)
       case _ => this
     }
   }
@@ -27,12 +26,14 @@ case class MData(mutations: Mutations, filter: Filter,
   failoverLog: Option[FailoverLog])
 
 sealed trait MDataClass
-case class Mutations(dataFrame: DataFrame, files: Array[String],
-  format: FileFormat) extends MDataClass
-case class Filter(dataFrame: DataFrame, file: String, format: FileFormat)
-  extends MDataClass
-case class FailoverLog(dataFrame: DataFrame, file: String, format: FileFormat)
-  extends MDataClass
+case class Mutations(dataFrame: DataFrame, source: Files) extends MDataClass
+case class Filter(dataFrame: DataFrame, source: File) extends MDataClass
+case class FailoverLog(dataFrame: DataFrame, source: File) extends MDataClass
+
+sealed trait DataFrameStorage
+case class File(file: String, format: FileFormat) extends DataFrameStorage
+case class Files(files: Array[String], format: FileFormat)
+  extends DataFrameStorage
 
 sealed trait FileFormat
 case object CSV extends FileFormat
@@ -89,7 +90,7 @@ object MStore {
     val df = props.env.sparkCtx.textFile(files)
       .map(_.split(",")).map(p => MutationSchema(
         p(0).toInt, p(1).toInt, p(2), p(3), p(4), p(5))).toDF()
-    Mutations(df, Array(files), props.format)
+    Mutations(df, Files(Array(files), props.format))
   }
 
   private def openFilter(file: String, props: Props): Filter = {
@@ -97,7 +98,7 @@ object MStore {
     val df = props.env.sparkCtx.textFile(file)
       .map(_.split(",")).map(p => FilterSchema(
         p(0).toInt, p(1).toInt, p(2))).toDF()
-    Filter(df, file, props.format)
+    Filter(df, File(file, props.format))
   }
 
   private def openFailoverLog(props: Props): Option[FailoverLog] = {
