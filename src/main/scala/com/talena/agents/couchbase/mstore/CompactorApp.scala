@@ -4,40 +4,7 @@ import org.apache.hadoop.fs.{FileSystem}
 import org.apache.spark.{SparkConf, SparkContext}
 import org.apache.spark.sql.{Row, SQLContext}
 
-import scala.util.Failure
-import scala.util.Success
-import scala.util.Try
-
 object CompactorApp extends App {
-  val env = newEnv()
-  val (l0, l1, l2) = parseArgs() match {
-    case Some(propsTuple) => MStore.open(propsTuple)
-    case None => throw new IllegalArgumentException(
-      "JSON file path argument missing")
-  }
-
-  compact()
-  env.sparkCtx.stop()
-
-  private def newEnv(): Env = {
-    val conf = new SparkConf().setAppName("Couchbase Compactor")
-    val sparkCtx = new SparkContext(conf)
-    val sqlCtx = new SQLContext(sparkCtx)
-    val fs = FileSystem.get(sparkCtx.hadoopConfiguration)
-    Env(sparkCtx, sqlCtx, fs)
-  }
-
-  private def parseArgs(): Option[(Props, Props, Props)] = {
-    args match {
-      case Array(file) => Some(parseJson(file))
-      case _ => None
-    }
-  }
-
-  private def compact() = {
-    l0.dedupeFilter()
-  }
-
   private def logError(msg: String): Unit = {
     System.err.println(msg)
   }
@@ -64,4 +31,34 @@ object CompactorApp extends App {
 
     (l0Props, l1Props, l2Props)
   }
+
+  private def parseArgs(): Option[(Props, Props, Props)] = {
+    args match {
+      case Array(file) => Some(parseJson(file))
+      case _ => None
+    }
+  }
+
+  private def compact() = {
+    l0.dedupeFilter()
+  }
+
+  private def newEnv(): Env = {
+    val conf = new SparkConf().setAppName("Couchbase Compactor")
+    val sparkCtx = new SparkContext(conf)
+    val sqlCtx = new SQLContext(sparkCtx)
+    val fs = FileSystem.get(sparkCtx.hadoopConfiguration)
+    Env(sparkCtx, sqlCtx, fs)
+  }
+
+  val env = newEnv()
+  val (l0, l1, l2) = parseArgs() match {
+    case Some(propsTuple) => MStore.open(propsTuple)
+    case None => throw new IllegalArgumentException(
+      "JSON file path argument missing")
+  }
+
+  compact()
+
+  env.sparkCtx.stop()
 }
