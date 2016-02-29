@@ -7,12 +7,12 @@ import org.apache.spark.sql.{DataFrame, Row, SQLContext}
 sealed trait MStore {
   def dedupeFilter(): MStore = {
     this match {
-      case L0(MData(mutations, Filter(filter, source), failoverLog), props) =>
+      case L0(MData(mutations, Filter(filter, source), rollbackLog), props) =>
         import props.env.sqlCtx.implicits._
         L0(MData(mutations, Filter(filter
           .groupBy($"pid", $"key")
           .max("seqno")
-          .toDF("pid", "key", "seqno"), source), failoverLog), props)
+          .toDF("pid", "key", "seqno"), source), rollbackLog), props)
       case _ => this
     }
   }
@@ -31,12 +31,12 @@ case class L1(data: Option[MData], props: Props) extends MStore
 case class L2(data: Option[MData], props: Props) extends MStore
 
 case class MData(mutations: Mutations, filter: Filter,
-  failoverLog: Option[FailoverLog])
+  rollbackLog: Option[RollbackLog])
 
 sealed trait MDataClass
 case class Mutations(dataFrame: DataFrame, source: Files) extends MDataClass
 case class Filter(dataFrame: DataFrame, source: File) extends MDataClass
-case class FailoverLog(dataFrame: DataFrame, source: File) extends MDataClass
+case class RollbackLog(dataFrame: DataFrame, source: File) extends MDataClass
 
 sealed trait DataFrameStorage
 case class File(file: String, format: FileFormat) extends DataFrameStorage
@@ -57,7 +57,7 @@ sealed trait Schema
 case class MutationSchema(pid: Int, seqno: Long, key: String, value: String,
   meta: String, data: String) extends Schema
 case class FilterSchema(pid: Int, seqno: Long, key: String) extends Schema
-case class FailoverLogSchema(pid: Int, seqno: Long) extends Schema
+case class RollbackLogSchema(pid: Int, seqno: Long) extends Schema
 
 sealed trait Level
 case object Level0 extends Level
@@ -87,7 +87,7 @@ object MStore {
       Some(MData(
         openMutations(mutationFiles, props),
         openFilter(filterFile, props),
-        openFailoverLog(props)))
+        openRollbackLog(props)))
     } else {
       None
     }
@@ -109,7 +109,7 @@ object MStore {
     Filter(df, File(file, props.format))
   }
 
-  private def openFailoverLog(props: Props): Option[FailoverLog] = {
+  private def openRollbackLog(props: Props): Option[RollbackLog] = {
     None
   }
 
