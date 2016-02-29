@@ -45,16 +45,16 @@ case class Props(id: String, level: Level, loc: String, format: FileFormat,
 
 case class Env(sparkCtx: SparkContext, sqlCtx: SQLContext, fs: FileSystem)
 
-sealed trait Level
-case object Level0 extends Level
-case object Level1 extends Level
-case object Level2 extends Level
-
 sealed trait Schema
 case class MutationSchema(pid: Int, seqno: Long, key: String, value: String,
   meta: String, data: String) extends Schema
 case class FilterSchema(pid: Int, seqno: Long, key: String) extends Schema
 case class FailoverLogSchema(pid: Int, seqno: Long) extends Schema
+
+sealed trait Level
+case object Level0 extends Level
+case object Level1 extends Level
+case object Level2 extends Level
 
 object MStore {
   def open(props:(Props, Props, Props)): (MStore, MStore, MStore) = {
