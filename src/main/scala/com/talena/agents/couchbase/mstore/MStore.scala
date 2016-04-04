@@ -1,19 +1,40 @@
 package com.talena.agents.couchbase.mstore
 
 import org.apache.hadoop.fs.{FileSystem, Path}
+import org.apache.hadoop.io.Text
 import org.apache.spark.{SparkConf, SparkContext}
 import org.apache.spark.sql.{DataFrame, Row, SQLContext}
+
+import com.talena.agents.couchbase.core.CouchbaseLongRecord;
+import com.talena.agents.couchbase.core.CouchbaseShortRecord;
 
 sealed trait MStore {
   def dedupeFilter(): MStore = {
     this match {
-      case L0(MData(mutations, Filter(filter, source), rollbackLog), props) =>
+      case L0(MData(mutations, Filter(dataFrame, source), rblog), props) =>
         import props.env.sqlCtx.implicits._
-        L0(MData(mutations, Filter(filter
-          .groupBy($"pid", $"key")
-          .max("seqno")
-          .toDF("pid", "key", "seqno"), source), rollbackLog), props)
+        L0(MData(mutations, Filter(dataFrame
+            .groupBy($"pid", $"key")
+            .max("seqno")
+            .toDF("pid", "key", "seqno"), source),
+          rblog), props)
       case _ => this
+    }
+  }
+
+  def updateFilter(other: MStore): MStore = {
+    (this, other) match {
+      case (L1(Some(MData(mutations, ourFilter, rblog)), props),
+            L0(MData(_, otherFilter, _), _))  =>
+        L1(Some(MData(mutations,
+          updateFilter(ourFilter, otherFilter, props.env.sqlCtx),
+          rblog)), props)
+      case (L2(Some(MData(mutations, ourFilter, rblog)), props),
+            L0(MData(_, otherFilter, _), _))  =>
+        L2(Some(MData(mutations,
+          updateFilter(ourFilter, otherFilter, props.env.sqlCtx),
+          rblog)), props)
+      case (_, _) => this
     }
   }
 
@@ -21,8 +42,21 @@ sealed trait MStore {
     this
   }
 
-  def updateFilter(other: MStore): MStore = {
-    this
+  private def updateFilter(our: Filter, other: Filter, sqlCtx: SQLContext)
+    : Filter = {
+    import sqlCtx.implicits._
+    our.dataFrame.registerTempTable("our")
+    other.dataFrame.registerTempTable("other")
+    val df = sqlCtx.sql("SELECT NVL(our.pid, other.pid) pid, " +
+      "NVL(our.key, other.key) key, NVL(our.seqno, other.seqno) seqno " +
+      "FROM other LEFT JOIN our ON other.key = our.key")
+
+    /*
+    val ourDF = our.dataFrame.toDF("ourpid", "ourkey", "ourseqno")
+    val otherDF = other.dataFrame.toDF("theirpid", "theirkey", "theirseqno")
+    val updatedDF = ourDF.join(theirDF, $"ourkey" === $"otherkey", "left_outer")
+    */
+    our
   }
 }
 
@@ -30,13 +64,12 @@ case class L0(data: MData, props: Props) extends MStore
 case class L1(data: Option[MData], props: Props) extends MStore
 case class L2(data: Option[MData], props: Props) extends MStore
 
-case class MData(mutations: Mutations, filter: Filter,
-  rollbackLog: Option[RollbackLog])
+case class MData(mutations: Mutations, filter: Filter, rblog: Option[RBLog])
 
 sealed trait MDataClass
 case class Mutations(dataFrame: DataFrame, source: Files) extends MDataClass
 case class Filter(dataFrame: DataFrame, source: File) extends MDataClass
-case class RollbackLog(dataFrame: DataFrame, source: File) extends MDataClass
+case class RBLog(dataFrame: DataFrame, source: File) extends MDataClass
 
 sealed trait DataFrameStorage
 case class File(file: String, format: FileFormat) extends DataFrameStorage
@@ -52,12 +85,6 @@ case class Props(id: String, level: Level, loc: String, format: FileFormat,
   env: Env)
 
 case class Env(sparkCtx: SparkContext, sqlCtx: SQLContext, fs: FileSystem)
-
-sealed trait Schema
-case class MutationSchema(pid: Int, seqno: Long, key: String, value: String,
-  meta: String, data: String) extends Schema
-case class FilterSchema(pid: Int, seqno: Long, key: String) extends Schema
-case class RollbackLogSchema(pid: Int, seqno: Long) extends Schema
 
 sealed trait Level
 case object Level0 extends Level
@@ -87,7 +114,7 @@ object MStore {
       Some(MData(
         openMutations(mutationFiles, props),
         openFilter(filterFile, props),
-        openRollbackLog(props)))
+        openRBLog(props)))
     } else {
       None
     }
@@ -95,21 +122,24 @@ object MStore {
 
   private def openMutations(files: String, props: Props): Mutations = {
     import props.env.sqlCtx.implicits._
-    val df = props.env.sparkCtx.textFile(files)
-      .map(_.split(",")).map(p => MutationSchema(
-        p(0).toInt, p(1).toInt, p(2), p(3), p(4), p(5))).toDF()
+    //val df = props.env.sparkCtx.sequenceFile[CouchbaseShortRecord,
+    //  CouchbaseLongRecord](files).toDF()
+    val df = props.env.sparkCtx.sequenceFile[Text, CouchbaseShortRecord](
+      files)
+      .map(r => (r._2.partitionId(), r._1.toString(), r._2.seqNo()))
+      .toDF("pid", "key", "seqno")
     Mutations(df, Files(Array(files), props.format))
   }
 
   private def openFilter(file: String, props: Props): Filter = {
     import props.env.sqlCtx.implicits._
-    val df = props.env.sparkCtx.textFile(file)
-      .map(_.split(",")).map(p => FilterSchema(
-        p(0).toInt, p(1).toInt, p(2))).toDF()
+    val df = props.env.sparkCtx.sequenceFile[Text, CouchbaseShortRecord](file)
+      .map(r => (r._2.partitionId(), r._1.toString(), r._2.seqNo()))
+      .toDF("pid", "key", "seqno")
     Filter(df, File(file, props.format))
   }
 
-  private def openRollbackLog(props: Props): Option[RollbackLog] = {
+  private def openRBLog(props: Props): Option[RBLog] = {
     None
   }
 
@@ -117,7 +147,8 @@ object MStore {
     : Boolean = {
     Utils.verifyLocation(fs, loc)
     val (mutationFiles, filterFile) = files
-    val mutationsFilesExist = (fs.globStatus(new Path(mutationFiles)).length > 0)
+    val mutationsFilesExist = (fs.globStatus(new Path(mutationFiles))
+      .length > 0)
     val filterFileExists = (fs.globStatus(new Path(filterFile)).length == 1)
     (mutationsFilesExist, filterFileExists) match {
       case (true, true) =>
