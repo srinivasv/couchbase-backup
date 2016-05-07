@@ -13,4 +13,6 @@ object Utils extends LazyLogging {
     val files = fs.globStatus(glob)
     Some(files).filter(f => f.length > 0)
   }
+
+  def buildDirectoryPath(l: List[String]): String = l.mkString("/", "/", "/")
 }

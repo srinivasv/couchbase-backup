@@ -113,7 +113,7 @@ extends LazyLogging
 /** Companion object for the PartitionGroup class */
 object PartitionGroup extends LazyLogging {
   def apply(props: PartitionGroupProps): Option[PartitionGroup] = {
-    val mutations = Mutations(props)
+    val mutations: Option[PersistedMutations] = Mutations(props)
     val filter = Filter(props)
     val rblog = RBLog(props)
 

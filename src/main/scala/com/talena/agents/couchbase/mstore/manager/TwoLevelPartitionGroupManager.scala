@@ -42,8 +42,8 @@ extends PartitionGroupManager(conf, dataRepo, job) {
     logger.info(s"Using filter deduplication strategy: $deduplicationStrategy and " +
       "filter compaction strategy: $compactionStrategy for $ctx")
 
-    val l0Loc = l0Location(ctx)
-    val l1Loc = l1Location(ctx)
+    val l0Loc = Utils.buildDirectoryPath(dataRepo :: job :: getL0Location(ctx))
+    val l1Loc = Utils.buildDirectoryPath(dataRepo :: job :: getL1Location(ctx))
     logger.info(s"L0 location: $l0Loc, L1 location: $l1Loc")
 
     // Open the L0 filter for this partition group. Abort if the open fails.
@@ -85,7 +85,7 @@ extends PartitionGroupManager(conf, dataRepo, job) {
 
   override def persistCompactedFilters(ctx: PartitionGroupContext,
       filters: Map[String, CompactedFilter], dest: String): Unit = {
-    val l1Loc = l1LocationUsingPrefix(dest)(ctx)
+    val l1Loc = Utils.buildDirectoryPath(dest :: dataRepo :: job :: getL1Location(ctx))
     logger.info(s"Persisting compacted L1 filter for $ctx to $l1Loc")
     filters
       .getOrElse("l1CompactedFilter", throw new IllegalArgumentException("Invalid filter"))
@@ -109,12 +109,17 @@ extends PartitionGroupManager(conf, dataRepo, job) {
       *
       * If compaction does not occur, return None
       */
-    l1PersistedMutationsFilterPairFor(ctx)
-      .filter({ case (m, f) => m.source.files.length > l1CompactionThreshold })
-      .map({ case (m, f) => mapMutations[MutationTuple](m, f, mode, { m: MutationTuple => m }) })
-      .map({ m =>
-        logger.info("Finished compacting L1 mutations for $ctx")
-        Map(("l1CompactedMutations", m))
+    val l1Loc = Utils.buildDirectoryPath(dataRepo :: job :: addSnapshot(mode, getL1Location(ctx)))
+    PartitionGroup(PartitionGroupProps(ctx.id, ctx.bucket, l1Loc, ctx.env))
+      .filter({
+        case PartitionGroup(m: PersistedMutations, _, _) =>
+          m.source.files.length > l1CompactionThreshold
+      })
+      .map({
+        case PartitionGroup(m: PersistedMutations, f, _) =>
+          val m1 = mapMutations[MutationTuple](m, f, mode, { m: MutationTuple => m })
+          logger.info("Finished compacting L1 mutations for $ctx")
+          Map(("l1CompactedMutations", m1))
       })
   }
 
@@ -122,7 +127,7 @@ extends PartitionGroupManager(conf, dataRepo, job) {
       mutations: Map[String, MappedMutations[MutationTuple]], dest: String): Unit = {
     import org.apache.hadoop.io.NullWritable
 
-    val l1Loc = l1LocationUsingPrefix(dest)(ctx)
+    val l1Loc = Utils.buildDirectoryPath(dest :: dataRepo :: job :: getL1Location(ctx))
     logger.info(s"Persisting compacted L1 mutations for $ctx to $l1Loc")
 
     mutations
@@ -137,13 +142,17 @@ extends PartitionGroupManager(conf, dataRepo, job) {
     /** Open the partition group if the both mutation and filter files are found and invoke
       * mapMutations() with the provided mapping function.
       */
-    val (m, f) = l1PersistedMutationsFilterPairFor(ctx)
+    val l1Loc = Utils.buildDirectoryPath(dataRepo :: job :: addSnapshot(mode, getL1Location(ctx)))
+    val (m, f) = PartitionGroup(PartitionGroupProps(ctx.id, ctx.bucket, l1Loc, ctx.env))
+      .map({
+        case PartitionGroup(m: PersistedMutations, f, _) => (m, f)
+      })
       .getOrElse(throw new IllegalArgumentException("No mutation or filter files found: " + ctx))
 
-    val mappedMutations = mapMutations(m, f, mode, mappingFunc)
+    val m1 = mapMutations(m, f, mode, mappingFunc)
     logger.info(s"Finished mapping mutations for $ctx")
 
-    mappedMutations
+    m1
   }
 
   /** Filters mutations using a filter, then transforms them using a mapping functions.
@@ -163,43 +172,17 @@ extends PartitionGroupManager(conf, dataRepo, job) {
     mutations.map[A](filter, mappingFunc, mappingStrategy)
   }
 
-  /** Convenience method to extract mutations and filter from a PartitionGroupContext object.
-    *
-    * @param ctx A PartitionGroupContext object
-    * @return Some(mutations, filter) if BOTH mutations and filter are found
-    *         None if NEITHER mutations NOR filter are found
-    */
-  private def l1PersistedMutationsFilterPairFor(ctx: PartitionGroupContext)
-  : Option[(PersistedMutations, Filter)] = {
-    PartitionGroup(PartitionGroupProps(ctx.id, ctx.bucket, l1Location(ctx), ctx.env)) match {
-      case Some(PartitionGroup(m @ PersistedMutations(_, _, _), f, _)) => Some(m, f)
-      case _ => None
+  private def getL0Location(ctx: PartitionGroupContext): List[String] = getLocation(ctx, l0)
+  private def getL1Location(ctx: PartitionGroupContext): List[String] = getLocation(ctx, l1)
+  private def getLocation(ctx: PartitionGroupContext, lvl: level): List[String] =
+    ctx.bucket :: lvl.toString :: ctx.id.toString :: Nil
+
+  private def addSnapshot(mode: MutationsFilteringMode, l: List[String]): List[String] = {
+    mode match {
+      case Offline(s) => s :: l
+      case _ => l
     }
   }
-
-  /** Shortcuts for the possible usages of the curried location() function */
-  private lazy val l0Location  = locationWithoutPrefix(l0.toString)
-  private lazy val l1Location = locationWithoutPrefix(l1.toString)
-  private def l0LocationUsingPrefix(prefix: String) = locationUsingPrefix(prefix)(l0.toString)
-  private def l1LocationUsingPrefix(prefix: String) = locationUsingPrefix(prefix)(l1.toString)
-
-  /** Convenience methods for the partial application of the curried location() function */
-  private lazy val locationWithoutPrefix = location("") _
-  private def locationUsingPrefix(prefix: String) = location(prefix) _
-
-  /** A curried function to compute the location for a partition group's files given a level and an
-    * optional prefix.
-    *
-    * The prefix is used by the persist() class of APIs that include a "destination" parameter
-    * specifying where the outputs must be saved.
-    *
-    * The output of this function will be of the form:
-    * - /prefix/dataRepo/job/bucket/level/pgid if the prefix is specified OR
-    * - //dataRepo/job/bucket/level/pgid if the prefix is not specified
-    */
-  private def location(prefix: String)(level: String)(ctx: PartitionGroupContext): String =
-    Array(prefix, dataRepo, job, ctx.bucket, level, ctx.id.toString)
-      .foldLeft("")((a, b) => a + "/" + b)
 
   /** Model the levels as case objects so we don't have to deal with strings */
   sealed trait level
