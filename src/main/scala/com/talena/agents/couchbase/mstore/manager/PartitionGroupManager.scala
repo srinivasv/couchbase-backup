@@ -63,10 +63,12 @@ extends LazyLogging {
     *            the partition group to target.
     * @param filters The map of [[com.talena.agents.couchbase.mstore.CompactedFilter]] objects
     *                returned in a previous call to compactFilters().
-    * @param dest The location where the filters must be saved.
+    * @param tmpLoc The location where the filters must be saved.
     */
   def persistCompactedFilters(ctx: PartitionGroupContext, filters: Map[String, CompactedFilter],
-      dest: String): Unit
+      tmpLoc: String): Unit
+
+  def moveCompactedFilters(ctx: PartitionGroupContext, tmpLoc: String): Unit
 
   /** Compacts all applicable mutations of a partition group.
     *
@@ -77,7 +79,7 @@ extends LazyLogging {
     * @return A map of new [[com.talena.agents.couchbase.mstore.MappedMutations]] objects.
     */
   def compactMutations(ctx: PartitionGroupContext, mode: MutationsFilteringMode)
-  : Option[Map[String, MappedMutations[MutationTuple]]]
+  : Option[Map[String, CompactedMutations]]
 
   /** Saves all compacted mutations of a partition group.
     *
@@ -85,10 +87,14 @@ extends LazyLogging {
     *            the partition group to target.
     * @param mutations The map of [[com.talena.agents.couchbase.mstore.MappedMutations]] objects
     *                returned in a previous call to compactMutations().
-    * @param dest The location where the mutations must be saved.
+    * @param tmpLoc The location where the mutations must be saved.
     */
   def persistCompactedMutations(ctx: PartitionGroupContext,
-      mutations: Map[String, MappedMutations[MutationTuple]], dest: String): Unit
+      mutations: Map[String, CompactedMutations], tmpLoc: String): Unit
+
+  def moveCompactedMutations(ctx: PartitionGroupContext, tmpLoc: String): Unit
+
+  def moveUncompactedMutations(ctx: PartitionGroupContext): Unit
 
   /** Transforms ALL mutations of a partition group using a function.
     *
@@ -110,13 +116,11 @@ extends LazyLogging {
   */
 object PartitionGroupManager {
   def apply(conf: SparkConf, dataRepo: String, job: String): PartitionGroupManager = {
-    conf.get("mstore.partitionGroupManager", "TwoLevelPartitionGroupManager")
-      match {
-        case "TwoLevelPartitionGroupManager" => new TwoLevelPartitionGroupManager(conf, dataRepo,
-          job)
-        case unsupported => throw new IllegalArgumentException(
-          "Unsupported partition group manager: " + unsupported)
-      }
+    MStoreProps.PartitionGroupManager(conf) match {
+      case "TwoLevelPartitionGroupManager" => new TwoLevelPartitionGroupManager(conf, dataRepo, job)
+      case unsupported => throw new IllegalArgumentException(
+        "Unsupported partition group manager: " + unsupported)
+    }
   }
 }
 

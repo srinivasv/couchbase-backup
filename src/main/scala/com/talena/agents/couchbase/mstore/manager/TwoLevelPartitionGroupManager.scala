@@ -4,6 +4,7 @@ import com.talena.agents.couchbase.core.{CouchbaseLongRecord => MutationTuple}
 import com.talena.agents.couchbase.mstore._
 import com.talena.agents.couchbase.mstore.strategy._
 
+import org.apache.hadoop.fs.Path
 import org.apache.hadoop.io.{Text, Writable}
 
 import org.apache.spark.SparkConf
@@ -34,16 +35,9 @@ extends PartitionGroupManager(conf, dataRepo, job) {
     * - Return a Map object with a sole entry containing the compacted L1 filter.
     */
   override def compactFilters(ctx: PartitionGroupContext): Map[String, CompactedFilter] = {
-    // Look up the strategies specified for the deduplication and compaction operations
-    val deduplicationStrategy = FilterDeduplicationStrategy(
-      conf.get("mstore.filterDeduplicationStrategy", "SparkSQL"))
-    val compactionStrategy = FilterCompactionStrategy(
-      conf.get("mstore.filterCompactionStrategy", "SparkRDD"))
-    logger.info(s"Using filter deduplication strategy: $deduplicationStrategy and " +
-      "filter compaction strategy: $compactionStrategy for $ctx")
-
-    val l0Loc = Utils.buildDirectoryPath(dataRepo :: job :: getL0Location(ctx))
-    val l1Loc = Utils.buildDirectoryPath(dataRepo :: job :: getL1Location(ctx))
+    // Compute the L0 and L1 locations for this partition group
+    val l0Loc = Utils.buildFSLocation(dataRepo :: job :: ctx.bucket :: l0.toString :: Nil)
+    val l1Loc = Utils.buildFSLocation(dataRepo :: job :: ctx.bucket :: l1.toString :: Nil)
     logger.info(s"L0 location: $l0Loc, L1 location: $l1Loc")
 
     // Open the L0 filter for this partition group. Abort if the open fails.
@@ -58,7 +52,7 @@ extends PartitionGroupManager(conf, dataRepo, job) {
 
     // Deduplicate the L0 filter
     logger.info(s"Deduplicating L0 filter")
-    val l0DedupedFilter = l0Filter.deduplicate(deduplicationStrategy)
+    val l0DedupedFilter = l0Filter.deduplicate()
 
     /*
      * Compact the L1 filter using the deduplicated L0 filter and the rblog. This will result in a
@@ -71,8 +65,7 @@ extends PartitionGroupManager(conf, dataRepo, job) {
      */
     logger.info(s"Compacting L1 filter")
     val l1CompactedFilter = l1Filter
-      .map(f => f.compact(l0DedupedFilter.broadcastKeys(), rblog.map(r => r.broadcast()),
-        compactionStrategy))
+      .map(f => f.compact(l0DedupedFilter.broadcastKeys(), rblog.map(r => r.broadcast())))
       .getOrElse({
         logger.info(s"L1 filter not found (possibly because this is the first compaction run). " +
           "Creating a new L1 filter from the deduplicated L0 filter.")
@@ -84,16 +77,29 @@ extends PartitionGroupManager(conf, dataRepo, job) {
   }
 
   override def persistCompactedFilters(ctx: PartitionGroupContext,
-      filters: Map[String, CompactedFilter], dest: String): Unit = {
-    val l1Loc = Utils.buildDirectoryPath(dest :: dataRepo :: job :: getL1Location(ctx))
-    logger.info(s"Persisting compacted L1 filter for $ctx to $l1Loc")
+      filters: Map[String, CompactedFilter], tmpLoc: String): Unit = {
+    val loc = Utils.buildFSLocation(tmpLoc :: dataRepo :: job :: ctx.bucket :: l0.toString :: Nil)
+    logger.info(s"Persisting compacted L1 filter for $ctx")
+
     filters
       .getOrElse("l1CompactedFilter", throw new IllegalArgumentException("Invalid filter"))
-      .persist(l1Loc)
+      .persist(loc)
+  }
+
+  override def moveCompactedFilters(ctx: PartitionGroupContext, tmpLoc: String): Unit = {
+    val fs = ctx.env.fs
+    val ext = ".filter"
+
+    val file = ctx.id + ext
+    val from = Utils.buildFSLocation(tmpLoc :: dataRepo :: job :: ctx.bucket :: l1.toString :: Nil) + file
+    val to = Utils.buildFSLocation(dataRepo :: job :: ctx.bucket :: l1.toString :: Nil) + file
+
+    logger.info(s"Moving compacted filter file for $ctx from $from to $to")
+    fs.rename(new Path(from), new Path(to))
   }
 
   override def compactMutations(ctx: PartitionGroupContext, mode: MutationsFilteringMode)
-  : Option[Map[String, MappedMutations[MutationTuple]]] = {
+  : Option[Map[String, CompactedMutations]] = {
     /** Look up the compaction threshold from the Spark conf object */
     val l1CompactionThreshold = conf.get(
       "mstore.twoLevelPartitionGroupManager.l1CompactionThreshold", "10").toInt
@@ -109,7 +115,8 @@ extends PartitionGroupManager(conf, dataRepo, job) {
       *
       * If compaction does not occur, return None
       */
-    val l1Loc = Utils.buildDirectoryPath(dataRepo :: job :: addSnapshot(mode, getL1Location(ctx)))
+    val l1Loc = Utils.buildFSLocation(dataRepo :: job
+      :: addSnapshot(mode, ctx.bucket :: l1.toString :: Nil))
     PartitionGroup(PartitionGroupProps(ctx.id, ctx.bucket, l1Loc, ctx.env))
       .filter({
         case PartitionGroup(m: PersistedMutations, _, _) =>
@@ -119,22 +126,42 @@ extends PartitionGroupManager(conf, dataRepo, job) {
         case PartitionGroup(m: PersistedMutations, f, _) =>
           val m1 = mapMutations[MutationTuple](m, f, mode, { m: MutationTuple => m })
           logger.info("Finished compacting L1 mutations for $ctx")
-          Map(("l1CompactedMutations", m1))
+          Map(("l1CompactedMutations", CompactedMutations(m1.rdd, m1.props)))
       })
   }
 
   override def persistCompactedMutations(ctx: PartitionGroupContext,
-      mutations: Map[String, MappedMutations[MutationTuple]], dest: String): Unit = {
-    import org.apache.hadoop.io.NullWritable
-
-    val l1Loc = Utils.buildDirectoryPath(dest :: dataRepo :: job :: getL1Location(ctx))
-    logger.info(s"Persisting compacted L1 mutations for $ctx to $l1Loc")
+      mutations: Map[String, CompactedMutations], tmpLoc: String): Unit = {
+    val loc = Utils.buildFSLocation(tmpLoc :: dataRepo :: job :: ctx.bucket :: l1.toString :: Nil)
+    logger.info(s"Persisting compacted L1 mutations for $ctx")
 
     mutations
       .getOrElse("l1CompactedMutations", throw new IllegalArgumentException("Invalid mutations"))
-      .rdd
-      .map(m => (NullWritable.get(), m))
-      .saveAsSequenceFile(l1Loc)
+      .persist(loc)
+  }
+
+  override def moveCompactedMutations(ctx: PartitionGroupContext, tmpLoc: String): Unit = {
+    val fs = ctx.env.fs
+    val ext = ".mutations"
+
+    val file = ctx.id + ext
+    val from = Utils.buildFSLocation(tmpLoc :: dataRepo :: job :: ctx.bucket :: l1.toString :: Nil) + file
+    val to = Utils.buildFSLocation(dataRepo :: job :: ctx.bucket :: l1.toString :: Nil) + file
+
+    logger.info(s"Moving compacted mutations file for $ctx from $from to $to")
+    fs.rename(new Path(from), new Path(to))
+  }
+
+  override def moveUncompactedMutations(ctx: PartitionGroupContext): Unit = {
+    val fs = ctx.env.fs
+    val ext = ".mutations"
+
+    val file = ctx.id + ext
+    val from = Utils.buildFSLocation(List(dataRepo, job, ctx.bucket, l1.toString)) + file
+    val to = Utils.buildFSLocation(List(dataRepo, job, ctx.bucket, l1.toString)) + file
+
+    logger.info(s"Moving uncompacted mutations file for $ctx from $from to $to")
+    fs.rename(new Path(from), new Path(to))
   }
 
   override def mapMutations[A: ClassTag](ctx: PartitionGroupContext, mode: MutationsFilteringMode,
@@ -142,7 +169,8 @@ extends PartitionGroupManager(conf, dataRepo, job) {
     /** Open the partition group if the both mutation and filter files are found and invoke
       * mapMutations() with the provided mapping function.
       */
-    val l1Loc = Utils.buildDirectoryPath(dataRepo :: job :: addSnapshot(mode, getL1Location(ctx)))
+    val l1Loc = Utils.buildFSLocation(dataRepo :: job :: addSnapshot(mode, ctx.bucket :: l1.toString
+      :: Nil))
     val (m, f) = PartitionGroup(PartitionGroupProps(ctx.id, ctx.bucket, l1Loc, ctx.env))
       .map({
         case PartitionGroup(m: PersistedMutations, f, _) => (m, f)
@@ -165,17 +193,8 @@ extends PartitionGroupManager(conf, dataRepo, job) {
     */
   private def mapMutations[A: ClassTag](mutations: PersistedMutations, filter: Filter,
       mode: MutationsFilteringMode, mappingFunc: MutationTuple => A): MappedMutations[A] = {
-    val mappingStrategy = MutationsMappingStrategy[A](
-      conf.get("mstore.mutationsMappingStrategy", "SparkRDD"))
-    logger.info(s"Using mutations mapping strategy: $mappingStrategy")
-
-    mutations.map[A](filter, mappingFunc, mappingStrategy)
+    mutations.map[A](filter, mappingFunc)
   }
-
-  private def getL0Location(ctx: PartitionGroupContext): List[String] = getLocation(ctx, l0)
-  private def getL1Location(ctx: PartitionGroupContext): List[String] = getLocation(ctx, l1)
-  private def getLocation(ctx: PartitionGroupContext, lvl: level): List[String] =
-    ctx.bucket :: lvl.toString :: ctx.id.toString :: Nil
 
   private def addSnapshot(mode: MutationsFilteringMode, l: List[String]): List[String] = {
     mode match {

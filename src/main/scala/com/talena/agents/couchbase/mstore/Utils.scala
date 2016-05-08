@@ -4,6 +4,8 @@ import com.typesafe.scalalogging.LazyLogging
 
 import org.apache.hadoop.fs.{FileStatus, FileSystem, Path}
 
+import org.apache.spark.SparkConf
+
 object Utils extends LazyLogging {
   def isValidLocation(fs: FileSystem, location: Path): Boolean = {
     fs.exists(location) && fs.getFileStatus(location).isDirectory
@@ -14,5 +16,5 @@ object Utils extends LazyLogging {
     Some(files).filter(f => f.length > 0)
   }
 
-  def buildDirectoryPath(l: List[String]): String = l.mkString("/", "/", "/")
+  def buildFSLocation(l: List[String]): String = l.mkString("/", "/", "/")
 }

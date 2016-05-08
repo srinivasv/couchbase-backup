@@ -1,12 +1,11 @@
 package com.talena.agents.couchbase.mstore.iterable
 
-import com.talena.agents.couchbase.mstore.BucketProps
-import com.talena.agents.couchbase.mstore.Env
-import com.talena.agents.couchbase.mstore.PartitionGroupContext
+import com.talena.agents.couchbase.mstore._
 
 import com.typesafe.scalalogging.LazyLogging
 
 import org.apache.hadoop.fs.{FileSystem}
+
 import org.apache.spark.{SparkConf, SparkContext}
 import org.apache.spark.sql.SQLContext
 
@@ -49,7 +48,7 @@ extends Iterable[PartitionGroupContext] with LazyLogging {
     val sparkCtx = new SparkContext(conf)
     val sqlCtx = new SQLContext(sparkCtx)
     val fs = FileSystem.get(sparkCtx.hadoopConfiguration)
-    val env = Env(sparkCtx, sqlCtx, fs)
+    val env = Env(conf, sparkCtx, sqlCtx, fs)
     logger.info(s"Created new Env: $env")
 
     env
@@ -63,7 +62,7 @@ extends Iterable[PartitionGroupContext] with LazyLogging {
   */
 object MIterable {
   def apply(conf: SparkConf, buckets: List[BucketProps]): MIterable = {
-    conf.get("mstore.iterable", "SequentialIterable") match {
+    MStoreProps.Iterable(conf) match {
       case "SequentialIterable" => new SequentialIterable(conf, buckets)
       case unsupported => throw new IllegalArgumentException(
         "Unsupported iterable: " + unsupported)

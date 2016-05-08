@@ -4,16 +4,12 @@ import com.talena.agents.couchbase.mstore._
 
 import com.typesafe.scalalogging.LazyLogging
 
-class FilterCompactionStrategy(strategy: (Filter, Filter, Option[RBLog], Env) => CompactedFilter) {
-  def apply(our: Filter, their: Filter, rblog: Option[RBLog], env: Env): CompactedFilter = {
-    strategy(our, their, rblog, env)
-  }
-}
-
 object FilterCompactionStrategy extends LazyLogging {
-  def apply(strategy: String): FilterCompactionStrategy = {
-    strategy match {
-      case "SparkRDD" => new FilterCompactionStrategy(usingSparkRDD)
+  def apply(env: Env): (Filter, Filter, Option[RBLog]) => CompactedFilter = {
+    MStoreProps.FilterCompactionStrategy(env.conf) match {
+      case "SparkRDD" =>
+        logger.info(s"Using filter compaction strategy: SparkRDD")
+        usingSparkRDD(env) _
       case unsupported => throw new IllegalArgumentException(
         "Unsupported filter compaction strategy: " + unsupported)
     }
@@ -49,7 +45,7 @@ object FilterCompactionStrategy extends LazyLogging {
     * @param env A reference to an active Env object for involing Spark operations
     * @return The compacted oldF filter as a new CompactedFilter object
     */
-  private def usingSparkRDD(oldF: Filter, newF: Filter, rblog: Option[RBLog], env: Env)
+  private def usingSparkRDD(env: Env)(oldF: Filter, newF: Filter, rblog: Option[RBLog])
   : CompactedFilter = {
     (oldF, newF, rblog) match {
       case (PersistedFilter(oldRDD, _, props),

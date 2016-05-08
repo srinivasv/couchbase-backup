@@ -18,7 +18,7 @@ extends MIterable(conf, bucketProps) {
     buckets.tail
       .foldLeft(buckets.head)((bucket1, bucket2) => bucket1 ++ bucket2)
       .map({ case (bucket, pgroup) =>
-        PartitionGroupContext(pgroup, bucket, env)
+        PartitionGroupContext(pgroup.toString, bucket, env)
       })
   }
 

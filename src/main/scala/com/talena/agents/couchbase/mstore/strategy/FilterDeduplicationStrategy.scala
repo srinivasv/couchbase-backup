@@ -5,16 +5,12 @@ import com.talena.agents.couchbase.mstore._
 
 import com.typesafe.scalalogging.LazyLogging
 
-class FilterDeduplicationStrategy(strategy: (Filter, Env) => DeduplicatedFilter) {
-  def apply(filter: Filter, env: Env): DeduplicatedFilter = {
-    strategy(filter, env)
-  }
-}
-
 object FilterDeduplicationStrategy extends LazyLogging {
-  def apply(strategy: String): FilterDeduplicationStrategy = {
-    strategy match {
-      case "SparkSQL" => new FilterDeduplicationStrategy(usingSparkSQL)
+  def apply(env: Env): Filter => DeduplicatedFilter = {
+    MStoreProps.FilterDeduplicationStrategy(env.conf) match {
+      case "SparkSQL" =>
+        logger.info(s"Using filter deduplication strategy: SparkRDD")
+        usingSparkSQL(env) _
       case unsupported => throw new IllegalArgumentException(
         "Unsupported filter deduplication strategy: " + unsupported)
     }
@@ -31,7 +27,7 @@ object FilterDeduplicationStrategy extends LazyLogging {
     * @param env A reference to an active Env object for involing Spark operations
     * @return The deduplicated filter as a new DeduplicatedFilter object
     */
-  private def usingSparkSQL(filter: Filter, env: Env): DeduplicatedFilter = {
+  private def usingSparkSQL(env: Env)(filter: Filter): DeduplicatedFilter = {
     filter match {
       case PersistedFilter(rdd, _, props) =>
         import props.env.sqlCtx.implicits._

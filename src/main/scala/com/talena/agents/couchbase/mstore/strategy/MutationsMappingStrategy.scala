@@ -7,18 +7,13 @@ import com.typesafe.scalalogging.LazyLogging
 
 import scala.reflect.ClassTag
 
-class MutationsMappingStrategy[A](
-    strategy: (Mutations, Filter, MutationTuple => A, Env) => MappedMutations[A]) {
-  def apply(mutations: Mutations, filter: Filter, mappingFunc: MutationTuple => A, env: Env)
-  : MappedMutations[A] = {
-    strategy(mutations, filter, mappingFunc, env)
-  }
-}
-
 object MutationsMappingStrategy extends LazyLogging {
-  def apply[A: ClassTag](strategy: String): MutationsMappingStrategy[A] = {
-    strategy match {
-      case "SparkRDD" => new MutationsMappingStrategy[A](usingSparkRDD[A])
+  def apply[A: ClassTag](env: Env)
+  : (Mutations, Filter, MutationTuple => A) => MappedMutations[A] = {
+    MStoreProps.MutationsMappingStrategy(env.conf) match {
+      case "SparkRDD" =>
+        logger.info(s"Using mutations mapping strategy: SparkRDD")
+        usingSparkRDD[A](env) _
       case unsupported => throw new IllegalArgumentException(
         "Unsupported mutations compaction strategy: " + unsupported)
     }
@@ -48,8 +43,8 @@ object MutationsMappingStrategy extends LazyLogging {
     * @param env A reference to an active Env object for involing Spark operations
     * @return The mapped mutations as a new MappedMutations object
     */
-  private def usingSparkRDD[A: ClassTag](mutations: Mutations, filter: Filter,
-      mappingFunc: MutationTuple => A, env: Env): MappedMutations[A] = {
+  private def usingSparkRDD[A: ClassTag](env: Env)(mutations: Mutations, filter: Filter,
+      mappingFunc: MutationTuple => A): MappedMutations[A] = {
     (mutations, filter) match {
       case (PersistedMutations(rdd, _, props),
         BroadcastedSeqnoTuples(bcast, _)) => MappedMutations[A](

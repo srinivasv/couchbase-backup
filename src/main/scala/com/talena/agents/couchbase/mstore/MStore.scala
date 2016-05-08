@@ -59,13 +59,13 @@ object MStore extends LazyLogging {
     * @param dataRepo UUID of the data repository
     * @param job ID of the job
     * @param bProps A list of [[BucketProps]] objects describing the buckets involved
-    * @param dest A temporary location where the compacted filter will be written to. A subsequent
+    * @param tmpLoc A temporary location where the compacted filter will be written to. A subsequent
     * move operation will move the compacted filter and mutations from the temporary to their final
     * location.
     */
-  def compact(dataRepo: String, job: String, bProps: List[BucketProps], dest: String) = {
+  def compact(dataRepo: String, job: String, bProps: List[BucketProps], tmpLoc: String) = {
     logger.info(s"Begin compact() request")
-    logger.info(s"dataRepo: $dataRepo, job: $job, bProps: $bProps, dest: $dest")
+    logger.info(s"dataRepo: $dataRepo, job: $job, bProps: $bProps, tmpLoc: $tmpLoc")
 
     using(dataRepo, job, bProps)((manager, pgCtx) => {
       logger.info(s"Compacting mutations for $pgCtx")
@@ -76,14 +76,21 @@ object MStore extends LazyLogging {
       val compactedMutations = manager.compactMutations(pgCtx, InlineWithFiltersCompaction(
         compactedFilters))
 
-      manager.persistCompactedFilters(pgCtx, compactedFilters, dest)
+      manager.persistCompactedFilters(pgCtx, compactedFilters, tmpLoc)
 
       // compactedMutations is an Option[Map[String, MappedMutations[MutationTuple]]]. Here, we
       // invoke Option's map() method to extract the actual value (if it is present) and persist it.
       // If Option is empty (None), it means there was nothing to compact.
       compactedMutations
-        .map(m => manager.persistCompactedMutations(pgCtx, m, dest))
+        .map(m => manager.persistCompactedMutations(pgCtx, m, tmpLoc))
         .getOrElse(logger.info(s"No mutations to compact for $pgCtx"))
+    })
+
+    /** Move the compacted filters and mutations to their final location */
+    using(dataRepo, job, bProps)((manager, pgCtx) => {
+      logger.info(s"Moving compacted mutations for $pgCtx to the mainline")
+      manager.moveCompactedFilters(pgCtx, tmpLoc)
+      manager.moveCompactedMutations(pgCtx, tmpLoc)
     })
 
     logger.info(s"End compact() request")
@@ -97,17 +104,24 @@ object MStore extends LazyLogging {
     * @param dataRepo UUID of the data repository
     * @param job ID of the job
     * @param bProps A list of [[BucketProps]] objects describing the buckets involved
-    * @param dest A temporary location where the compacted filter will be written to. A subsequent
+    * @param tmpLoc A temporary location where the compacted filter will be written to. A subsequent
     * move operation will move the compacted filter from the temporary to its final location.
     */
-  def compactFilters(dataRepo: String, job: String, bProps: List[BucketProps], dest: String) = {
+  def compactFilters(dataRepo: String, job: String, bProps: List[BucketProps], tmpLoc: String) = {
     logger.info(s"Begin compactFilters() request")
-    logger.info(s"dataRepo: $dataRepo, job: $job, bProps: $bProps, dest: $dest")
+    logger.info(s"dataRepo: $dataRepo, job: $job, bProps: $bProps, tmpLoc: $tmpLoc")
 
     using(dataRepo, job, bProps)((manager, pgCtx) => {
       logger.info(s"Compacting filters for $pgCtx")
       val compactedFilters = manager.compactFilters(pgCtx)
-      manager.persistCompactedFilters(pgCtx, compactedFilters, dest)
+      manager.persistCompactedFilters(pgCtx, compactedFilters, tmpLoc)
+    })
+
+    /** Move the compacted filters and the uncompacted mutations to their final location */
+    using(dataRepo, job, bProps)((manager, pgCtx) => {
+      logger.info(s"Moving compacted mutations for $pgCtx to the mainline")
+      manager.moveCompactedFilters(pgCtx, tmpLoc)
+      manager.moveUncompactedMutations(pgCtx)
     })
 
     logger.info(s"End compactFilters() request")
@@ -122,14 +136,15 @@ object MStore extends LazyLogging {
     * @param job ID of the job
     * @param bProps A list of [[BucketProps]] objects describing the buckets involved
     * @param snapshot The specific snapshot to use for reading mutations
-    * @param dest A temporary location where the compacted filter will be written to. A subsequent
-    * move operation will move the compacted mutations from the temporary to their final location.
+    * @param tmpLoc A temporary location where the compacted mutations will be written to. A
+    * subsequent move operation will move the compacted mutations from the temporary to their final
+    * location.
     */
   def compactMutations(dataRepo: String, job: String, bProps: List[BucketProps], snapshot: String,
-      dest: String) = {
+      tmpLoc: String) = {
     logger.info(s"Begin compactMutations() request")
     logger.info(s"dataRepo: $dataRepo, job: $job, bProps: $bProps, snapshot: $snapshot, " +
-      "dest: $dest")
+      "tmpLoc: $tmpLoc")
 
     using(dataRepo, job, bProps)((manager, pgCtx) => {
       logger.info(s"Compacting mutations for $pgCtx in snapshot $snapshot")
@@ -142,15 +157,37 @@ object MStore extends LazyLogging {
       // invoke Option's map() method to extract the actual value (if it is present) and persist it.
       // If Option is empty (None), it means there was nothing to compact.
       compactedMutations
-        .map(m => manager.persistCompactedMutations(pgCtx, m, dest))
+        .map(m => manager.persistCompactedMutations(pgCtx, m, tmpLoc))
         .getOrElse(logger.info(s"No mutations to compact for $pgCtx in snapshot $snapshot"))
     })
 
     logger.info(s"End compactMutations() request")
   }
 
-  /** "Maps" mutations from a snapshot using the given function (a callback) potentially transforming
-    * it to something else.
+  /** Moves one or more buckets' compacted mutations generated by a previous call to
+    * compactMutations() from the temp location specified then to the mainline.
+    *
+    * @param dataRepo UUID of the data repository
+    * @param job ID of the job
+    * @param bProps A list of [[BucketProps]] objects describing the buckets involved
+    * @param tmpLoc The temporary location that was specified in the call to compactMutations()
+    * where the compacted mutations are now present.
+    */
+  def moveCompactedMutations(dataRepo: String, job: String, bProps: List[BucketProps],
+      tmpLoc: String) = {
+    logger.info(s"Begin moveCompactedMutations() request")
+    logger.info(s"dataRepo: $dataRepo, job: $job, bProps: $bProps, tmpLoc: $tmpLoc")
+
+    using(dataRepo, job, bProps)((manager, pgCtx) => {
+      logger.info(s"Moving compacted mutations for $pgCtx to the mainline")
+      manager.moveCompactedMutations(pgCtx, tmpLoc)
+    })
+
+    logger.info(s"End moveCompactedMutations() request")
+  }
+
+  /** "Maps" mutations from a snapshot using the given function (a callback) potentially
+    * transforming it to something else.
     *
     * Will be used by the recovery, masking and sampling agents.
     *
@@ -224,7 +261,7 @@ case class BucketProps(name: String, numPartitionGroups: Integer)
   * @param sqlCtx Reference to an active SparkSQL context object.
   * @param fs Reference to a filesystem object.
   */
-case class Env(sparkCtx: SparkContext, sqlCtx: SQLContext, fs: FileSystem)
+case class Env(conf: SparkConf, sparkCtx: SparkContext, sqlCtx: SQLContext, fs: FileSystem)
 
 /** Defines what a partition group is.
   *
@@ -232,7 +269,7 @@ case class Env(sparkCtx: SparkContext, sqlCtx: SQLContext, fs: FileSystem)
   * @param bucket The Couchbase bucket to which the partition group belongs.
   * @param env A reference to the [[Env]] object assigned to this partition group.
   */
-case class PartitionGroupContext(id: Int, bucket: String, env: Env)
+case class PartitionGroupContext(id: String, bucket: String, env: Env)
 
 /** An interface to support arbitrary transformations ("maps") over mutations.
   *
