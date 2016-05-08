@@ -16,5 +16,5 @@ object Utils extends LazyLogging {
     Some(files).filter(f => f.length > 0)
   }
 
-  def buildFSLocation(l: List[String]): String = l.mkString("/", "/", "/")
+  def buildLocation(l: List[Option[String]]): String = l.flatten.mkString("/", "/", "/")
 }

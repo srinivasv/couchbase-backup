@@ -1,6 +1,6 @@
 multiple file formats
 iterable without env
-fix getL0Location
-unit tests
-
 deduplicate rblog
+delete rblog from l0
+
+unit tests
