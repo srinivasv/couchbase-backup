@@ -35,20 +35,21 @@ extends PartitionGroupManager(conf, dataRepo, job) {
     * - Return a Map object with a sole entry containing the compacted L1 filter.
     */
   override def compactFilters(ctx: PartitionGroupContext): Map[String, CompactedFilter] = {
-    // Compute the L0 and L1 locations for this partition group
-    val l0Loc = l0Location(dataRepo, job, ctx.bucket)
-    val l1Loc = l1Location(dataRepo, job, ctx.bucket)
-    logger.info(s"L0 location: $l0Loc, L1 location: $l1Loc")
+    // Compute the L0 and L1 paths for this partition group
+    val ext = MStoreProps.FilterFileExtension(conf)
+    val l0 = l0Path(dataRepo, job, ctx, ext)
+    val l1 = l1Path(dataRepo, job, ctx, ext)
+    logger.info(s"L0 path: $l0, L1 path: $l1")
 
     // Open the L0 filter for this partition group. Abort if the open fails.
-    val l0Filter = Filter(PartitionGroupProps(ctx.id, ctx.bucket, l0Loc, ctx.env))
+    val l0Filter = Filter(l0, ctx.env)
       .getOrElse(throw new IllegalStateException("L0 filter file missing: " + ctx))
 
     // Open the L1 filter for this partition group.
-    val l1Filter = Filter(PartitionGroupProps(ctx.id, ctx.bucket, l1Loc, ctx.env))
+    val l1Filter = Filter(l1, ctx.env)
 
     // Open the rblog for this partition group.
-    val rblog = RBLog(PartitionGroupProps(ctx.id, ctx.bucket, l0Loc, ctx.env))
+    val rblog = RBLog(l0, ctx.env)
 
     // Deduplicate the L0 filter
     logger.info(s"Deduplicating L0 filter")
@@ -69,7 +70,7 @@ extends PartitionGroupManager(conf, dataRepo, job) {
       .getOrElse({
         logger.info(s"L1 filter not found (possibly because this is the first compaction run). " +
           "Creating a new L1 filter from the deduplicated L0 filter.")
-        CompactedFilter(l0DedupedFilter.rdd, l0DedupedFilter.props)
+        CompactedFilter(l0DedupedFilter.rdd, ctx.env)
       })
 
     logger.info("Finished compacting L1 filter for $ctx")
@@ -78,24 +79,22 @@ extends PartitionGroupManager(conf, dataRepo, job) {
 
   override def persistCompactedFilters(ctx: PartitionGroupContext,
       filters: Map[String, CompactedFilter], tmpLoc: String): Unit = {
-    val l1Loc = l1LocationWithPrefix(tmpLoc)(dataRepo, job, ctx.bucket)
-    logger.info(s"Persisting compacted L1 filter for $ctx to location $l1Loc")
+    val ext = MStoreProps.FilterFileExtension(conf)
+    val l1 = l1PathWithPrefix(tmpLoc)(dataRepo, job, ctx, ext)
+    logger.info(s"Persisting compacted L1 filter for $ctx to path $l1")
 
     filters
       .getOrElse("l1CompactedFilter", throw new IllegalArgumentException("Invalid filter"))
-      .persist(l1Loc)
+      .persist(l1)
   }
 
   override def moveCompactedFilters(ctx: PartitionGroupContext, tmpLoc: String): Unit = {
-    val fs = ctx.env.fs
-    val ext = ".filter"
-
-    val file = ctx.id + ext
-    val from = l1LocationWithPrefix(tmpLoc)(dataRepo, job, ctx.bucket) + file
-    val to = l1Location(dataRepo, job, ctx.bucket) + file
-
+    val ext = MStoreProps.FilterFileExtension(conf)
+    val from = l1PathWithPrefix(tmpLoc)(dataRepo, job, ctx, ext)
+    val to = l1Path(dataRepo, job, ctx, ext)
     logger.info(s"Moving compacted filter file for $ctx from $from to $to")
-    fs.rename(new Path(from), new Path(to))
+
+    ctx.env.fs.rename(new Path(from), new Path(to))
   }
 
   override def compactMutations(ctx: PartitionGroupContext, mode: MutationsFilteringMode)
@@ -110,8 +109,8 @@ extends PartitionGroupManager(conf, dataRepo, job) {
       *
       * If compaction does not occur, return None
       */
-    val l1CompactionThreshold = conf.get(
-      "mstore.twoLevelPartitionGroupManager.l1CompactionThreshold", "10").toInt
+    val l1CompactionThreshold = MStoreProps.TwoLevelPartitionGroupManagerL1CompactionThreshold(conf)
+      .toInt
     logger.info(s"Using mutations compaction threshold of $l1CompactionThreshold files for $ctx")
 
     val mappedMutations = mapMutationsOnCondition[MutationTuple](ctx, mode)(m => m)((m, _) => {
@@ -122,42 +121,37 @@ extends PartitionGroupManager(conf, dataRepo, job) {
 
     mappedMutations.map(m => {
       logger.info(s"Finished compacting L1 mutations for $ctx")
-      Map(("l1CompactedMutations", CompactedMutations(m.rdd, m.props)))
+      Map(("l1CompactedMutations", CompactedMutations(m.rdd, m.env)))
     })
   }
 
   override def persistCompactedMutations(ctx: PartitionGroupContext,
       mutations: Map[String, CompactedMutations], tmpLoc: String): Unit = {
-    val l1Loc = l1LocationWithPrefix(tmpLoc)(dataRepo, job, ctx.bucket)
+    val ext = MStoreProps.MutationsFileExtension(conf)
+    val l1 = l1PathWithPrefix(tmpLoc)(dataRepo, job, ctx, ext)
     logger.info(s"Persisting compacted L1 mutations for $ctx")
 
     mutations
       .getOrElse("l1CompactedMutations", throw new IllegalArgumentException("Invalid mutations"))
-      .persist(l1Loc)
+      .persist(l1)
   }
 
   override def moveCompactedMutations(ctx: PartitionGroupContext, tmpLoc: String): Unit = {
-    val fs = ctx.env.fs
-    val ext = ".mutations"
-
-    val file = ctx.id + ext
-    val from = l1LocationWithPrefix(tmpLoc)(dataRepo, job, ctx.bucket) + file
-    val to = l1Location(dataRepo, job, ctx.bucket) + file
-
+    val ext = MStoreProps.MutationsFileExtension(conf)
+    val from = l1PathWithPrefix(tmpLoc)(dataRepo, job, ctx, ext)
+    val to = l1Path(dataRepo, job, ctx, ext)
     logger.info(s"Moving compacted mutations file for $ctx from $from to $to")
-    fs.rename(new Path(from), new Path(to))
+
+    ctx.env.fs.rename(new Path(from), new Path(to))
   }
 
   override def moveUncompactedMutations(ctx: PartitionGroupContext): Unit = {
-    val fs = ctx.env.fs
-    val ext = ".mutations"
-
-    val file = ctx.id + ext
-    val from = l0Location(dataRepo, job, ctx.bucket) + file
-    val to = l1Location(dataRepo, job, ctx.bucket) + file
-
+    val ext = MStoreProps.MutationsFileExtension(conf)
+    val from = l0Path(dataRepo, job, ctx, ext)
+    val to = l1Path(dataRepo, job, ctx, ext)
     logger.info(s"Moving uncompacted mutations file for $ctx from $from to $to")
-    fs.rename(new Path(from), new Path(to))
+
+    ctx.env.fs.rename(new Path(from), new Path(to))
   }
 
   override def mapMutations[A: ClassTag](ctx: PartitionGroupContext, mode: MutationsFilteringMode,
@@ -174,22 +168,30 @@ extends PartitionGroupManager(conf, dataRepo, job) {
     * @param mappingFunc The mapping function to use for the transformation.
     * @return A MappedMutations object representing the transformed mutations.
     */
-  private def mapMutationsOnCondition[A: ClassTag](ctx: PartitionGroupContext, mode: MutationsFilteringMode)
-      (mappingFunc: MutationTuple => A)(condition: (PersistedMutations, BroadcastableFilter) => Boolean)
+  private def mapMutationsOnCondition[A: ClassTag](ctx: PartitionGroupContext,
+      mode: MutationsFilteringMode)(mappingFunc: MutationTuple => A)
+      (condition: (PersistedMutations, BroadcastableFilter) => Boolean)
       : Option[MappedMutations[A]] = {
     val pair: Option[(PersistedMutations, BroadcastableFilter)] = mode match {
       case InlineWithFiltersCompaction(f) =>
-        val l1Loc = l1Location(dataRepo, job, ctx.bucket)
-        val pgProps = PartitionGroupProps(ctx.id, ctx.bucket, l1Loc, ctx.env)
-        Mutations(pgProps).map({
+        val ext = MStoreProps.MutationsFileExtension(conf)
+        val l1 = l1Path(dataRepo, job, ctx, ext)
+        Mutations(l1, ctx.env).map({
           case m @ PersistedMutations(_, _, _) => (m, f.getOrElse("l1CompactedFilter",
             throw new IllegalArgumentException("Invalid filter")))
         })
+
       case Offline(s) =>
-        val l1Loc = l1LocationForSnapshot(s)(dataRepo, job, ctx.bucket)
-        val pgProps = PartitionGroupProps(ctx.id, ctx.bucket, l1Loc, ctx.env)
-        PartitionGroup(pgProps).map({
-          case PartitionGroup(m @ PersistedMutations(_, _, _), f @ PersistedFilter(_, _, _), _) => (m, f)
+        val extM = MStoreProps.MutationsFileExtension(conf)
+        val extF = MStoreProps.FilterFileExtension(conf)
+        val extR = MStoreProps.RBLogFileExtension(conf)
+
+        val l1M = l1PathForSnapshot(s)(dataRepo, job, ctx, extM)
+        val l1F = l1PathForSnapshot(s)(dataRepo, job, ctx, extF)
+        val l1R = l1PathForSnapshot(s)(dataRepo, job, ctx, extR)
+        PartitionGroup(l1M, l1F, l1R, ctx.env).map({
+          case PartitionGroup(m @ PersistedMutations(_, _, _), f @ PersistedFilter(_, _, _), _) =>
+            (m, f)
         })
     }
 
@@ -198,16 +200,16 @@ extends PartitionGroupManager(conf, dataRepo, job) {
       .map({ case (m, f) => m.map[A](f.broadcastSeqnoTuples(), mappingFunc) })
   }
 
-  private def l0Location = location(l0)(None, None) _
-  private def l1Location = location(l1)(None, None) _
-  private def l1LocationWithPrefix(prefix: String) = location(l1)(Some(prefix), None) _
-  private def l1LocationForSnapshot(snapshot: String) = location(l1)(None, Some(snapshot)) _
+  private def l0Path = path(l0)(None, None) _
+  private def l1Path = path(l1)(None, None) _
+  private def l1PathWithPrefix(prefix: String) = path(l1)(Some(prefix), None) _
+  private def l1PathForSnapshot(snapshot: String) = path(l1)(None, Some(snapshot)) _
 
-  private def location(level: level)(prefix: Option[String], snapshot: Option[String])
-      (dataRepo: String, job: String, bucket: String): String = {
-    Utils.buildLocation(List(
-      prefix, Some(dataRepo), Some(job), snapshot, Some(bucket), Some(level.toString)
-    ))
+  private def path(level: level)(prefix: Option[String], snapshot: Option[String])
+      (dataRepo: String, job: String, ctx: PartitionGroupContext, ext: String): String = {
+    Utils.buildFSPath(List(
+      prefix, Some(dataRepo), Some(job), snapshot, Some(ctx.bucket), Some(level.toString)
+    )) + ctx.id + "*" + ext
   }
 }
 

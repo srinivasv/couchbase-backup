@@ -245,6 +245,7 @@ object MStore extends LazyLogging {
     logger.info(s"conf: $conf, iterable: $iterable, manager: $manager")
 
     iterable.map(pgCtx => f(manager, pgCtx))
+    iterable.stop()
   }
 }
 

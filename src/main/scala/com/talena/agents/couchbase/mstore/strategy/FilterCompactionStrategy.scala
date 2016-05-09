@@ -48,8 +48,7 @@ object FilterCompactionStrategy extends LazyLogging {
   private def usingSparkRDD(env: Env)(oldF: Filter, newF: Filter, rblog: Option[RBLog])
   : CompactedFilter = {
     (oldF, newF, rblog) match {
-      case (PersistedFilter(oldRDD, _, props),
-        BroadcastedKeys(bcastNewKeys, _),
+      case (PersistedFilter(oldRDD, _, _), BroadcastedKeys(bcastNewKeys, _),
         Some(BroadcastedRBLog(bcastRBlog, _))) => CompactedFilter(
           oldRDD.mapPartitions({ iter =>
             logger.info(s"Compacting filter using provided filter and rollback log")
@@ -63,9 +62,9 @@ object FilterCompactionStrategy extends LazyLogging {
               f <- iter if isValidKey(f.key()) && isValidSeqno(f.partitionId(), f.uuid(), f.seqNo())
             } yield f
           }, preservesPartitioning = true),
-          props)
+          env)
 
-      case (PersistedFilter(oldRDD, _, props), BroadcastedKeys(bcastNewKeys, _), None) =>
+      case (PersistedFilter(oldRDD, _, _), BroadcastedKeys(bcastNewKeys, _), None) =>
         CompactedFilter(
           oldRDD.mapPartitions({ iter =>
             logger.info(s"Compacting filter using provided filter. No rollback log specified.")
@@ -77,7 +76,7 @@ object FilterCompactionStrategy extends LazyLogging {
               f <- iter if isValidKey(f.key())
             } yield f
           }, preservesPartitioning = true),
-          props)
+          env)
 
       case unsupported => throw new IllegalArgumentException("Unsupported types: " + unsupported)
     }

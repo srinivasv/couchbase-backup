@@ -29,8 +29,8 @@ object FilterDeduplicationStrategy extends LazyLogging {
     */
   private def usingSparkSQL(env: Env)(filter: Filter): DeduplicatedFilter = {
     filter match {
-      case PersistedFilter(rdd, _, props) =>
-        import props.env.sqlCtx.implicits._
+      case PersistedFilter(rdd, _, _) =>
+        import env.sqlCtx.implicits._
         logger.info(s"Deduplicating filter using SparkSQL")
         DeduplicatedFilter(
           rdd
@@ -40,7 +40,7 @@ object FilterDeduplicationStrategy extends LazyLogging {
             .max("seqno")
             .toDF("pid", "key", "seqno")
             .map(r => new FilterTuple(r.getShort(0), r.getString(1), r.getLong(2))),
-          props)
+          env)
       case unsupported => throw new IllegalArgumentException(
         "Unsupported type: " + unsupported)
     }

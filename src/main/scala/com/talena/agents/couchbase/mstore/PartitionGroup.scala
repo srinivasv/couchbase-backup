@@ -113,10 +113,10 @@ extends LazyLogging
 
 /** Companion object for the PartitionGroup class */
 object PartitionGroup extends LazyLogging {
-  def apply(props: PartitionGroupProps): Option[PartitionGroup] = {
-    val mutations: Option[PersistedMutations] = Mutations(props)
-    val filter = Filter(props)
-    val rblog = RBLog(props)
+  def apply(mPath: String, fPath: String, rPath: String, env: Env): Option[PartitionGroup] = {
+    val mutations: Option[PersistedMutations] = Mutations(mPath, env)
+    val filter = Filter(fPath, env)
+    val rblog = RBLog(rPath, env)
 
     /** Only the following two are valid scenarios. Throw an exception for all others.
       * - Valid mutations AND filter files are found, the rblog being optional.
@@ -130,12 +130,12 @@ object PartitionGroup extends LazyLogging {
       case (Some(m), Some(f), r) => Some(PartitionGroup(m, f, r))
       case (None, None, None) => None
       case unexpected => throw new IllegalStateException(
-        "Unexpected state for partition group: " + props + " " + unexpected)
+        s"Unexpected state for partition group ($mPath, $fPath, $rPath): $unexpected")
     }
   }
 }
 
-sealed abstract class Mutations(props: PartitionGroupProps) extends LazyLogging {
+sealed abstract class Mutations(env: Env) extends LazyLogging {
   /** Maps each MutationTuple in this mutations object to type A by applying a specified function
     * and using a specified strategy.
     *
@@ -148,20 +148,18 @@ sealed abstract class Mutations(props: PartitionGroupProps) extends LazyLogging 
     * @return A MappedMutations object of type A containing the transformed mutations.
     */
   def map[A: ClassTag](filter: Filter, mappingFunc: MutationTuple => A): MappedMutations[A] = {
-    val strategy = MutationsMappingStrategy[A](props.env)
+    val strategy = MutationsMappingStrategy[A](env)
     strategy(this, filter, mappingFunc)
   }
 }
 
-case class PersistedMutations(rdd: RDD[MutationTuple], source: Files, props: PartitionGroupProps)
-extends Mutations(props)
-case class MappedMutations[A: ClassTag](rdd: RDD[A], props: PartitionGroupProps)
-extends Mutations(props)
-case class CompactedMutations(rdd: RDD[MutationTuple], props: PartitionGroupProps)
-extends Mutations(props) {
-  def persist(location: String): Unit = {
-    val ext = MStoreProps.MutationsFileExtension(props.env.conf)
-    val file = location + props.id + ext
+case class PersistedMutations(rdd: RDD[MutationTuple], source: Files, env: Env)
+extends Mutations(env)
+case class MappedMutations[A: ClassTag](rdd: RDD[A], env: Env) extends Mutations(env)
+case class CompactedMutations(rdd: RDD[MutationTuple], env: Env) extends Mutations(env) {
+  def persist(loc: String): Unit = {
+    val ext = MStoreProps.MutationsFileExtension(env.conf)
+    val file = loc + ext
     logger.info(s"Persisting mutations to $file")
     rdd
       .map(t => (NullWritable.get(), t))
@@ -170,20 +168,17 @@ extends Mutations(props) {
 }
 
 object Mutations extends LazyLogging {
-  def apply(props: PartitionGroupProps): Option[PersistedMutations] = {
-    def open(glob: Path, files: Array[FileStatus]): PersistedMutations = {
-      val rdd = props.env.sparkCtx.sequenceFile[Text, MutationTuple](glob.toString())
-        .map({ case (_, v) => v })
-      PersistedMutations(rdd, Files(files, SequenceFile), props)
+  def apply(path: String, env: Env): Option[PersistedMutations] = {
+    def open(files: Array[FileStatus]): PersistedMutations = {
+      val rdd = env.sparkCtx.sequenceFile[Text, MutationTuple](path).map({ case (_, v) => v })
+      PersistedMutations(rdd, Files(files, SequenceFile), env)
     }
 
-    val ext = MStoreProps.MutationsFileExtension(props.env.conf)
-    val glob = new Path(props.location + props.id + "*" + ext)
-    Utils.listFiles(props.env.fs, glob).map(f => open(glob, f))
+    Utils.listFiles(env.fs, new Path(path)).map(open)
   }
 }
 
-sealed abstract class Filter(props: PartitionGroupProps) extends LazyLogging {
+sealed abstract class Filter(env: Env) extends LazyLogging {
   /** Deduplicates this filter by eliminating stale duplicate keys.
     *
     * Invokes the strategy object passed in to get the actual deduplication done.
@@ -191,7 +186,7 @@ sealed abstract class Filter(props: PartitionGroupProps) extends LazyLogging {
     * @return A DeduplicatedFilter object.
     */
   def deduplicate(): DeduplicatedFilter = {
-    FilterDeduplicationStrategy(props.env)(this)
+    FilterDeduplicationStrategy(env)(this)
   }
 
   /** Compacts this filter using a specified filter.
@@ -203,25 +198,22 @@ sealed abstract class Filter(props: PartitionGroupProps) extends LazyLogging {
     * @return A CompactedFilter object.
     */
   def compact(filter: Filter, rblog: Option[RBLog]): CompactedFilter = {
-    FilterCompactionStrategy(props.env)(this, filter, rblog)
+    FilterCompactionStrategy(env)(this, filter, rblog)
   }
 }
 
 object Filter extends LazyLogging {
-  def apply(props: PartitionGroupProps): Option[PersistedFilter] = {
-    def open(glob: Path, files: Array[FileStatus]): PersistedFilter = {
-      val rdd = props.env.sparkCtx.sequenceFile[Text, FilterTuple](glob.toString())
-        .map({ case (_, v) => v })
-      PersistedFilter(rdd, Files(files, SequenceFile), props)
+  def apply(path: String, env: Env): Option[PersistedFilter] = {
+    def open(files: Array[FileStatus]): PersistedFilter = {
+      val rdd = env.sparkCtx.sequenceFile[Text, FilterTuple](path).map({ case (_, v) => v })
+      PersistedFilter(rdd, Files(files, SequenceFile), env)
     }
 
-    val ext = MStoreProps.FilterFileExtension(props.env.conf)
-    val glob = new Path(props.location + props.id + "*" + ext)
-    Utils.listFiles(props.env.fs, glob).map(f => open(glob, f))
+    Utils.listFiles(env.fs, new Path(path)).map(open)
   }
 }
 
-sealed abstract class BroadcastableFilter(props: PartitionGroupProps) extends Filter(props) {
+sealed abstract class BroadcastableFilter(env: Env) extends Filter(env) {
   /** Broadcasts the keys of this filter to all nodes (a pre-step for a higher level filter
     * compaction).
     *
@@ -238,12 +230,12 @@ sealed abstract class BroadcastableFilter(props: PartitionGroupProps) extends Fi
     */
   def broadcastKeys(): BroadcastedKeys = {
     this match {
-      case DeduplicatedFilter(rdd, props) => BroadcastedKeys(props.env.sparkCtx.broadcast(
+      case DeduplicatedFilter(rdd, _) => BroadcastedKeys(env.sparkCtx.broadcast(
         rdd
           .map(t => t.key())
           .collect()
           .toSet),
-        props)
+        env)
       case unsupported => throw new IllegalArgumentException(
         "Unsupported filter type for keys broadcast: " + unsupported)
     }
@@ -262,12 +254,12 @@ sealed abstract class BroadcastableFilter(props: PartitionGroupProps) extends Fi
     */
   def broadcastSeqnoTuples(): BroadcastedSeqnoTuples = {
     this match {
-      case PersistedFilter(rdd, _, props) => BroadcastedSeqnoTuples(props.env.sparkCtx.broadcast(
+      case PersistedFilter(rdd, _, _) => BroadcastedSeqnoTuples(env.sparkCtx.broadcast(
         rdd
           .map(t => (t.partitionId(), t.uuid(), t.seqNo()))
           .collect()
           .toSet),
-        props)
+        env)
       case unsupported => throw new IllegalArgumentException(
         "Unsupported filter type for seqno tuples broadcast: " + unsupported)
     }
@@ -278,11 +270,11 @@ sealed abstract class BroadcastableFilter(props: PartitionGroupProps) extends Fi
     * Only a CompactedFilter is allowed as there is no use case for saving other kinds of filters at
     * this time.
     */
-  def persist(location: String): Unit = {
+  def persist(loc: String): Unit = {
     this match {
       case CompactedFilter(rdd, _) =>
-        val ext = MStoreProps.FilterFileExtension(props.env.conf)
-        val file = location + props.id + ext
+        val ext = MStoreProps.FilterFileExtension(env.conf)
+        val file = loc + ext
         logger.info(s"Persisting compacted filter to $file")
         rdd
           .map(t => (NullWritable.get(), t))
@@ -293,36 +285,30 @@ sealed abstract class BroadcastableFilter(props: PartitionGroupProps) extends Fi
   }
 }
 
-case class PersistedFilter(rdd: RDD[FilterTuple], source: Files, props: PartitionGroupProps)
-extends BroadcastableFilter(props)
-case class DeduplicatedFilter(rdd: RDD[FilterTuple], props: PartitionGroupProps)
-extends BroadcastableFilter(props)
-case class CompactedFilter(rdd: RDD[FilterTuple], props: PartitionGroupProps)
-extends BroadcastableFilter(props)
+case class PersistedFilter(rdd: RDD[FilterTuple], source: Files, env: Env)
+extends BroadcastableFilter(env)
+case class DeduplicatedFilter(rdd: RDD[FilterTuple], env: Env) extends BroadcastableFilter(env)
+case class CompactedFilter(rdd: RDD[FilterTuple], env: Env) extends BroadcastableFilter(env)
 
-sealed abstract class BroadcastedFilter(props: PartitionGroupProps) extends Filter(props)
+sealed abstract class BroadcastedFilter(env: Env) extends Filter(env)
 
-case class BroadcastedKeys(bcast: Broadcast[Set[String]], props: PartitionGroupProps)
-extends BroadcastedFilter(props)
-case class BroadcastedSeqnoTuples(bcast: Broadcast[Set[(Short, Long, Long)]],
-  props: PartitionGroupProps) extends BroadcastedFilter(props)
+case class BroadcastedKeys(bcast: Broadcast[Set[String]], env: Env) extends BroadcastedFilter(env)
+case class BroadcastedSeqnoTuples(bcast: Broadcast[Set[(Short, Long, Long)]], env: Env)
+extends BroadcastedFilter(env)
 
-sealed abstract class RBLog(props: PartitionGroupProps) extends LazyLogging
+sealed abstract class RBLog(env: Env) extends LazyLogging
 object RBLog extends LazyLogging {
-  def apply(props: PartitionGroupProps): Option[PersistedRBLog] = {
-    def open(glob: Path, files: Array[FileStatus]): PersistedRBLog = {
-      val rdd = props.env.sparkCtx.sequenceFile[Text, RBLogTuple](glob.toString())
-        .map({ case (_, v) => v })
-      PersistedRBLog(rdd, Files(files, SequenceFile), props)
+  def apply(path: String, env: Env): Option[PersistedRBLog] = {
+    def open(files: Array[FileStatus]): PersistedRBLog = {
+      val rdd = env.sparkCtx.sequenceFile[Text, RBLogTuple](path).map({ case (_, v) => v })
+      PersistedRBLog(rdd, Files(files, SequenceFile), env)
     }
 
-    val ext = MStoreProps.RBLogFileExtension(props.env.conf)
-    val glob = new Path(props.location + props.id + "*" + ext)
-    Utils.listFiles(props.env.fs, glob).map(f => open(glob, f))
+    Utils.listFiles(env.fs, new Path(path)).map(open)
   }
 }
 
-sealed abstract class BroadcastableRBLog(props: PartitionGroupProps) extends RBLog(props) {
+sealed abstract class BroadcastableRBLog(env: Env) extends RBLog(env) {
   /** Broadcasts the tuples of this rblog to all nodes (a pre-step for higher level filter
     * compaction).
     *
@@ -334,22 +320,21 @@ sealed abstract class BroadcastableRBLog(props: PartitionGroupProps) extends RBL
     */
   def broadcast(): BroadcastedRBLog = {
     this match {
-      case PersistedRBLog(rdd, _, props) => BroadcastedRBLog(props.env.sparkCtx.broadcast(
+      case PersistedRBLog(rdd, _, _) => BroadcastedRBLog(env.sparkCtx.broadcast(
         rdd
           .map(t => ((t.partition(), t.uuid()), t.seqno()))
           .collectAsMap()),
-        props)
+        env)
       case unsupported => throw new IllegalArgumentException(
         "Unsupported rollback log type for broadcast: " + unsupported)
     }
   }
 }
 
-case class PersistedRBLog(rdd: RDD[RBLogTuple], source: Files, props: PartitionGroupProps)
-extends BroadcastableRBLog(props)
-
-case class BroadcastedRBLog(bcast: Broadcast[Map[(Short, Long), Long]], props: PartitionGroupProps)
-extends RBLog(props)
+case class PersistedRBLog(rdd: RDD[RBLogTuple], source: Files, env: Env)
+extends BroadcastableRBLog(env)
+case class BroadcastedRBLog(bcast: Broadcast[Map[(Short, Long), Long]], env: Env)
+extends RBLog(env)
 
 /** Encapsulates the set of files (along with their file format) backing the RDD in case of
   * PersistedMutations, PersistedFilter and PersistedRBLog classes.
@@ -361,13 +346,3 @@ sealed trait FileFormat
 case object CSV extends FileFormat
 case object JSON extends FileFormat
 case object SequenceFile extends FileFormat
-
-/** A set of props that are stored along with each object in the PartitionGroup ADT hierarchy.
-  *
-  * @param id An ID for this parition group.
-  * @param bucket The Couchbase bucket to which this partition group belongs.
-  * @param location The HDFS location where the files for this partition group can be found.
-  * @param env An instance of [[com.talena.agents.couchbase.mstore.Env]] that was used to
-  *            instantiate this partition group.
-  */
-case class PartitionGroupProps(id: String, bucket: String, location: String, env: Env)

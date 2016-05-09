@@ -46,17 +46,15 @@ object MutationsMappingStrategy extends LazyLogging {
   private def usingSparkRDD[A: ClassTag](env: Env)(mutations: Mutations, filter: Filter,
       mappingFunc: MutationTuple => A): MappedMutations[A] = {
     (mutations, filter) match {
-      case (PersistedMutations(rdd, _, props),
-        BroadcastedSeqnoTuples(bcast, _)) => MappedMutations[A](
+      case (PersistedMutations(rdd, _, _), BroadcastedSeqnoTuples(bcast, _)) => MappedMutations[A](
           rdd.mapPartitions[A]({ iter =>
             logger.info(s"Mapping mutations using SparkRDD")
-
             val seqnoTuples = bcast.value
             for {
               m <- iter if seqnoTuples((m.partitionId(), m.uuid(), m.seqNo()))
             } yield mappingFunc(m)
           }, preservesPartitioning = true),
-          props)
+          env)
 
       case unsupported => throw new IllegalArgumentException(
         "Unsupported types: " + unsupported)
