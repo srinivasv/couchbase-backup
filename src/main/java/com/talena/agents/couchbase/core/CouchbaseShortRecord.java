@@ -30,23 +30,26 @@ public class CouchbaseShortRecord implements Writable {
   protected short partitionId; 
   protected short uuid; 
   protected long seqNo;
-  private String key;
+  protected String key;
   protected Type recType;
   
   public CouchbaseShortRecord(final short partitionId, final long seqNo,
-    final String key, final Type recType) {
+    //final String key, final Type recType) {
+    final String key) {
     this.partitionId = partitionId;
     this.seqNo = seqNo;
     this.key = key;
-    this.recType = recType;
+    //this.recType = recType;
   }
 
+  /*
   public CouchbaseShortRecord(final short partitionId, final String key,
     final long seqNo) {
     this.partitionId = partitionId;
     this.key = key;
     this.seqNo = seqNo;
   }
+  */
 
   public CouchbaseShortRecord() {
   }
@@ -126,7 +129,8 @@ public class CouchbaseShortRecord implements Writable {
   public void write(DataOutput out) throws IOException {
     out.writeShort(this.partitionId);
     out.writeLong(this.seqNo);    
-    UTF8.writeString(out, this.recType.name());
+    //UTF8.writeString(out, this.recType.name());
+    out.writeUTF(this.key);
         
   }
 
@@ -135,7 +139,8 @@ public class CouchbaseShortRecord implements Writable {
     
     this.partitionId = in.readShort();
     this.seqNo = in.readLong();
-    this.recType = Enum.valueOf(Type.class, UTF8.readString(in));
+    //this.recType = Enum.valueOf(Type.class, UTF8.readString(in));
+    this.key = in.readUTF();
   }
 
   public void set(CouchbaseShortRecord record) {
@@ -146,7 +151,7 @@ public class CouchbaseShortRecord implements Writable {
 
   @Override
   public String toString() {
-    return String.format("(partitionId=%d, seqNo=%d, recType=%s)",
-      partitionId, seqNo, recType);
+    return String.format("(partitionId=%d, seqNo=%d, key=%s, recType=%s)",
+      partitionId, seqNo, key, recType);
   }
 }

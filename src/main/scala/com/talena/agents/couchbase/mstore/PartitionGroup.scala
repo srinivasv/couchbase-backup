@@ -149,6 +149,7 @@ sealed abstract class Mutations(env: Env) extends LazyLogging {
     */
   def map[A: ClassTag](filter: Filter, mappingFunc: MutationTuple => A): MappedMutations[A] = {
     val strategy = MutationsMappingStrategy[A](env)
+    println(s"Before calling strategy")
     strategy(this, filter, mappingFunc)
   }
 }
@@ -158,12 +159,12 @@ extends Mutations(env)
 case class MappedMutations[A: ClassTag](rdd: RDD[A], env: Env) extends Mutations(env)
 case class CompactedMutations(rdd: RDD[MutationTuple], env: Env) extends Mutations(env) {
   def persist(loc: String): Unit = {
-    val ext = MStoreProps.MutationsFileExtension(env.conf)
-    val file = loc + ext
-    logger.info(s"Persisting mutations to $file")
+    // val ext = MStoreProps.MutationsFileExtension(env.conf)
+    // val file = loc + ext
+    logger.info(s"Persisting mutations to $loc")
     rdd
       .map(t => (NullWritable.get(), t))
-      .saveAsSequenceFile(file)
+      .saveAsSequenceFile(loc)
   }
 }
 
@@ -205,7 +206,8 @@ sealed abstract class Filter(env: Env) extends LazyLogging {
 object Filter extends LazyLogging {
   def apply(path: String, env: Env): Option[PersistedFilter] = {
     def open(files: Array[FileStatus]): PersistedFilter = {
-      val rdd = env.sparkCtx.sequenceFile[Text, FilterTuple](path).map({ case (_, v) => v })
+      val rdd = env.sparkCtx.sequenceFile[NullWritable, FilterTuple](path)
+        .map({ case (_, v) => logger.info(s"Read filter tuple $v"); v })
       PersistedFilter(rdd, Files(files, SequenceFile), env)
     }
 
@@ -254,7 +256,9 @@ sealed abstract class BroadcastableFilter(env: Env) extends Filter(env) {
     */
   def broadcastSeqnoTuples(): BroadcastedSeqnoTuples = {
     this match {
-      case PersistedFilter(rdd, _, _) => BroadcastedSeqnoTuples(env.sparkCtx.broadcast(
+      case PersistedFilter(rdd, _, _) =>
+        println(s"Before broadcast of seqno tuples")
+        BroadcastedSeqnoTuples(env.sparkCtx.broadcast(
         rdd
           .map(t => (t.partitionId(), t.uuid(), t.seqNo()))
           .collect()
@@ -273,12 +277,12 @@ sealed abstract class BroadcastableFilter(env: Env) extends Filter(env) {
   def persist(loc: String): Unit = {
     this match {
       case CompactedFilter(rdd, _) =>
-        val ext = MStoreProps.FilterFileExtension(env.conf)
-        val file = loc + ext
-        logger.info(s"Persisting compacted filter to $file")
+        // val ext = MStoreProps.FilterFileExtension(env.conf)
+        // val file = loc + ext
+        logger.info(s"Persisting compacted filter to $loc")
         rdd
           .map(t => (NullWritable.get(), t))
-          .saveAsSequenceFile(file)
+          .saveAsSequenceFile(loc)
       case unsupported => throw new IllegalArgumentException(
         "Unsupported filter type for persist: " + unsupported)
     }

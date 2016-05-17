@@ -19,7 +19,7 @@ object FilterDeduplicationStrategy extends LazyLogging {
   /** A wrapper to convert FilterTuple to a Scala case class to enable implicit Spark DataFrame
     * transformations on it.
     */
-  case class ShadowFilterTuple(pid: Int, key: String, seqno: Long)
+  case class ShadowFilterTuple(pid: Short, key: String, seqno: Long)
 
   /** Uses Spark SQL operations for deduplicating a filter.
     *
@@ -39,7 +39,7 @@ object FilterDeduplicationStrategy extends LazyLogging {
             .groupBy($"pid", $"key")
             .max("seqno")
             .toDF("pid", "key", "seqno")
-            .map(r => new FilterTuple(r.getShort(0), r.getString(1), r.getLong(2))),
+            .map(r => new FilterTuple(r.getShort(0), r.getLong(2), r.getString(1))),
           env)
       case unsupported => throw new IllegalArgumentException(
         "Unsupported type: " + unsupported)

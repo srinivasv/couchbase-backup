@@ -66,10 +66,19 @@ public class CouchbaseLongRecord extends CouchbaseShortRecord
   }
   
 
+  public CouchbaseLongRecord() {}
+
+  public CouchbaseLongRecord(final CouchbaseShortRecord sh) {
+    this.partitionId = sh.partitionId;
+    this.seqNo = sh.seqNo;
+    this.key = sh.key;
+  }
+
   @Override
   public void write(DataOutput out) throws IOException {
     try {
       super.write(out);
+      /*
       out.writeInt(this.expiration);
       out.writeLong(this.revisionSeqNo);
       out.writeInt(this.lockTime);
@@ -79,6 +88,7 @@ public class CouchbaseLongRecord extends CouchbaseShortRecord
       if (this.contentLen != -1) {
         out.write(this.content);
       }
+      */
     } catch(IOException e) {
       logger.error("Error in record serialization.", e);
       throw e;
@@ -90,6 +100,7 @@ public class CouchbaseLongRecord extends CouchbaseShortRecord
 
     try {
       super.readFields(in);
+      /*
       this.expiration = in.readInt();
       this.revisionSeqNo = in.readLong();
       this.lockTime = in.readInt();
@@ -101,6 +112,7 @@ public class CouchbaseLongRecord extends CouchbaseShortRecord
         this.content = new byte[this.contentLen];
         in.readFully(this.content);
       }
+      */
     } catch(IOException e) {
       logger.error("Error in record deserialization.", e);
       throw e;

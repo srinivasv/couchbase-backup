@@ -37,19 +37,21 @@ extends PartitionGroupManager(conf, dataRepo, job) {
   override def compactFilters(ctx: PartitionGroupContext): Map[String, CompactedFilter] = {
     // Compute the L0 and L1 paths for this partition group
     val ext = MStoreProps.FilterFileExtension(conf)
-    val l0 = l0Path(dataRepo, job, ctx, ext)
-    val l1 = l1Path(dataRepo, job, ctx, ext)
+    val l0F = l0Path(dataRepo, job, ctx, ext)
+    val l1F = l1Path(dataRepo, job, ctx, ext)
     logger.info(s"L0 path: $l0, L1 path: $l1")
 
     // Open the L0 filter for this partition group. Abort if the open fails.
-    val l0Filter = Filter(l0, ctx.env)
+    val l0Filter = Filter(l0F, ctx.env)
       .getOrElse(throw new IllegalStateException("L0 filter file missing: " + ctx))
 
     // Open the L1 filter for this partition group.
-    val l1Filter = Filter(l1, ctx.env)
+    val l1Filter = Filter(l1F, ctx.env)
 
     // Open the rblog for this partition group.
-    val rblog = RBLog(l0, ctx.env)
+    val rExt = MStoreProps.RBLogFileExtension(conf)
+    val l0R = l0Path(dataRepo, job, ctx, rExt)
+    val rblog = RBLog(l0R, ctx.env)
 
     // Deduplicate the L0 filter
     logger.info(s"Deduplicating L0 filter")
@@ -66,7 +68,10 @@ extends PartitionGroupManager(conf, dataRepo, job) {
      */
     logger.info(s"Compacting L1 filter")
     val l1CompactedFilter = l1Filter
-      .map(f => f.compact(l0DedupedFilter.broadcastKeys(), rblog.map(r => r.broadcast())))
+      .map(f => {
+        val compacted = f.compact(l0DedupedFilter.broadcastKeys(), rblog.map(r => r.broadcast()))
+        CompactedFilter(l0DedupedFilter.rdd ++ compacted.rdd, ctx.env)
+      })
       .getOrElse({
         logger.info(s"L1 filter not found (possibly because this is the first compaction run). " +
           "Creating a new L1 filter from the deduplicated L0 filter.")
@@ -111,15 +116,18 @@ extends PartitionGroupManager(conf, dataRepo, job) {
       */
     val l1CompactionThreshold = MStoreProps.TwoLevelPartitionGroupManagerL1CompactionThreshold(conf)
       .toInt
+    println(s"Using mutations compaction threshold of $l1CompactionThreshold files for $ctx")
     logger.info(s"Using mutations compaction threshold of $l1CompactionThreshold files for $ctx")
 
     val mappedMutations = mapMutationsOnCondition[MutationTuple](ctx, mode)(m => m)((m, _) => {
       val numFiles = m.source.files.length
+      println(s"$numFiles mutation files found for $ctx in L1")
       logger.info(s"$numFiles mutation files found for $ctx in L1")
       numFiles > l1CompactionThreshold
     })
 
     mappedMutations.map(m => {
+      println(s"Finished compacting L1 mutations for $ctx")
       logger.info(s"Finished compacting L1 mutations for $ctx")
       Map(("l1CompactedMutations", CompactedMutations(m.rdd, m.env)))
     })
@@ -172,6 +180,7 @@ extends PartitionGroupManager(conf, dataRepo, job) {
       mode: MutationsFilteringMode)(mappingFunc: MutationTuple => A)
       (condition: (PersistedMutations, BroadcastableFilter) => Boolean)
       : Option[MappedMutations[A]] = {
+
     val pair: Option[(PersistedMutations, BroadcastableFilter)] = mode match {
       case InlineWithFiltersCompaction(f) =>
         val ext = MStoreProps.MutationsFileExtension(conf)
@@ -182,6 +191,7 @@ extends PartitionGroupManager(conf, dataRepo, job) {
         })
 
       case Offline(s) =>
+        println(s"Offline for $s")
         val extM = MStoreProps.MutationsFileExtension(conf)
         val extF = MStoreProps.FilterFileExtension(conf)
         val extR = MStoreProps.RBLogFileExtension(conf)
@@ -195,15 +205,16 @@ extends PartitionGroupManager(conf, dataRepo, job) {
         })
     }
 
+    println(s"Before map on condition")
     pair
-      .filter({ case (m, f) => condition(m, f) })
-      .map({ case (m, f) => m.map[A](f.broadcastSeqnoTuples(), mappingFunc) })
+      .filter({ case (m, f) => { val c = condition(m, f); println(s"Condition c"); c } })
+      .map({ case (m, f) => { println("Before map"); val r = m.map[A](f.broadcastSeqnoTuples(), mappingFunc); println("After map"); r } })
   }
 
-  private def l0Path = path(l0)(None, None) _
-  private def l1Path = path(l1)(None, None) _
-  private def l1PathWithPrefix(prefix: String) = path(l1)(Some(prefix), None) _
-  private def l1PathForSnapshot(snapshot: String) = path(l1)(None, Some(snapshot)) _
+  def l0Path = path(l0)(None, None) _
+  def l1Path = path(l1)(None, None) _
+  def l1PathWithPrefix(prefix: String) = path(l1)(Some(prefix), None) _
+  def l1PathForSnapshot(snapshot: String) = path(l1)(None, Some(snapshot)) _
 
   private def path(level: level)(prefix: Option[String], snapshot: Option[String])
       (dataRepo: String, job: String, ctx: PartitionGroupContext, ext: String): String = {

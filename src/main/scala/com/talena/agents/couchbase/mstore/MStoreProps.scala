@@ -16,7 +16,7 @@ object MStoreProps extends LazyLogging {
   }
 
   case object TwoLevelPartitionGroupManagerL1CompactionThreshold {
-    def apply(c: SparkConf) = c.get("mstore.twoLevelPartitionGroupManager.l1CompactionThreshold", "10")
+    def apply(c: SparkConf) = c.get("mstore.twoLevelPartitionGroupManager.l1CompactionThreshold", "0")
   }
 
   case object FilterDeduplicationStrategy {

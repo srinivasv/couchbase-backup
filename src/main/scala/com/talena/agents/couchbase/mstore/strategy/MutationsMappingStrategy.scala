@@ -12,6 +12,7 @@ object MutationsMappingStrategy extends LazyLogging {
   : (Mutations, Filter, MutationTuple => A) => MappedMutations[A] = {
     MStoreProps.MutationsMappingStrategy(env.conf) match {
       case "SparkRDD" =>
+        println(s"Using mutations mapping strategy: SparkRDD")
         logger.info(s"Using mutations mapping strategy: SparkRDD")
         usingSparkRDD[A](env) _
       case unsupported => throw new IllegalArgumentException(
@@ -48,6 +49,7 @@ object MutationsMappingStrategy extends LazyLogging {
     (mutations, filter) match {
       case (PersistedMutations(rdd, _, _), BroadcastedSeqnoTuples(bcast, _)) => MappedMutations[A](
           rdd.mapPartitions[A]({ iter =>
+            println(s"Mapping mutations using SparkRDD")
             logger.info(s"Mapping mutations using SparkRDD")
             val seqnoTuples = bcast.value
             for {

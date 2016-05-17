@@ -49,7 +49,9 @@ object FilterCompactionStrategy extends LazyLogging {
   : CompactedFilter = {
     (oldF, newF, rblog) match {
       case (PersistedFilter(oldRDD, _, _), BroadcastedKeys(bcastNewKeys, _),
-        Some(BroadcastedRBLog(bcastRBlog, _))) => CompactedFilter(
+        Some(BroadcastedRBLog(bcastRBlog, _))) =>
+        logger.info("Inside filter compaction routine with rblog")
+        CompactedFilter(
           oldRDD.mapPartitions({ iter =>
             logger.info(s"Compacting filter using provided filter and rollback log")
 
@@ -65,12 +67,16 @@ object FilterCompactionStrategy extends LazyLogging {
           env)
 
       case (PersistedFilter(oldRDD, _, _), BroadcastedKeys(bcastNewKeys, _), None) =>
+        logger.info("Inside filter compaction routine without rblog")
         CompactedFilter(
           oldRDD.mapPartitions({ iter =>
             logger.info(s"Compacting filter using provided filter. No rollback log specified.")
 
             val newKeys = bcastNewKeys.value
-            def isValidKey(k: String) = !newKeys(k)
+            def isValidKey(k: String) = {
+              logger.info(s"Checking key $k in set $newKeys")
+              !newKeys(k)
+            }
 
             for {
               f <- iter if isValidKey(f.key())
