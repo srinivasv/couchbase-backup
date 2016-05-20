@@ -12,7 +12,11 @@ public class CouchbaseRollbackRecord implements Writable {
   private long uuid;
   private long seqno;
 
-  public CouchbaseRollbackRecord() {
+  public CouchbaseRollbackRecord(final short partition, final long uuid,
+    final long seqno) {
+    this.partition = partition;
+    this.uuid = uuid;
+    this.seqno = seqno;
   }
 
   public short partition() {
