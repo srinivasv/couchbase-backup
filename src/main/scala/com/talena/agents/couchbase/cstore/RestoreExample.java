@@ -1,9 +1,9 @@
-package com.talena.agents.couchbase.mstore;
+package com.talena.agents.couchbase.cstore;
 
 import com.talena.agents.couchbase.core.CouchbaseLongRecord;
-import com.talena.agents.couchbase.mstore.BucketProps;
-import com.talena.agents.couchbase.mstore.MStore;
-import com.talena.agents.couchbase.mstore.MutationsMapper;
+import com.talena.agents.couchbase.cstore.BucketProps;
+import com.talena.agents.couchbase.cstore.CStore;
+import com.talena.agents.couchbase.cstore.MutationsMapper;
 
 import scala.collection.immutable.List;
 import scala.collection.immutable.List$;
@@ -12,10 +12,10 @@ import scala.reflect.ClassTag;
 
 public class RestoreExample extends MutationsMapper<Void> {
   public void restore() {
-  List bProps = getBucketProps(new BucketProps("sales", 1024));
-  ClassTag<Void> tag = scala.reflect.ClassTag$.MODULE$.apply(Void.class);
-  MStore.mapMutations("Production", "SalesBackup", bProps, "2016-12-29",
-    this, tag);
+    List bProps = getBucketProps(new BucketProps("sales", 1024));
+    ClassTag<Void> tag = scala.reflect.ClassTag$.MODULE$.apply(Void.class);
+    // CStore.mapMutations("Production", "SalesBackup", bProps, "2016-12-29",
+    //   this, tag);
   }
 
   @Override

@@ -1,0 +1,78 @@
+package com.talena.agents.couchbase.cstore.manager
+
+import com.talena.agents.couchbase.core.{CouchbaseLongRecord => MutationTuple}
+import com.talena.agents.couchbase.cstore._
+
+import com.typesafe.scalalogging.LazyLogging
+
+import org.apache.spark.SparkConf
+
+import scala.reflect.ClassTag
+
+/** A generic partition group manager interface encapsulating all of the possible operations on
+  * individual partition groups.
+  *
+  * This interface exposes an abstract notion of a partition group. It is up to the subclasses to
+  * decide the actual physical layout of a partition group. A two level partition group manager
+  * may organize partition groups in two levels L0 and L1. Similarly, a three level manager may do
+  * the same across three levels L0, L1 and L2.
+  *
+  * @param conf A reference to an active Spark configuration object.
+  * @param dataRepo Data repository UUID
+  * @param job Job ID
+  */
+abstract class PartitionGroupManager(conf: SparkConf, dataRepo: String, job: String)
+extends LazyLogging {
+  /** Compacts all applicable filters of a partition group.
+    *
+    * @param ctx A [[com.talena.agents.couchbase.mstore.PartitionGroupContext]] object specifying
+    *            the partition group to target.
+    * @return An environment object for dependency injection.
+    */
+  def compactFilters(ctx: PartitionGroupContext): Runnable[Unit]
+
+//  def moveCompactedFilters(ctx: PartitionGroupContext, tmpLoc: String): Unit
+
+//  def moveUncompactedMutations(ctx: PartitionGroupContext): Unit
+
+  /** Compacts all applicable mutations of a partition group.
+    *
+    * @param ctx A [[com.talena.agents.couchbase.mstore.PartitionGroupContext]] object specifying
+    *            the partition group to target.
+    * @param snapshot The snapshot to pick for compaction.
+    * @return An environment object for dependency injection.
+    */
+//  def compactMutations(ctx: PartitionGroupContext, snapshot: String): Runnable[Unit]
+
+//  def moveCompactedMutations(ctx: PartitionGroupContext, tmpLoc: String): Unit
+
+//  def compactAll(ctx: PartitionGroupContext): Runnable[Unit]
+
+  /** Transforms ALL mutations of a partition group using a function.
+    *
+    * @param ctx A [[com.talena.agents.couchbase.mstore.PartitionGroupContext]] object specifying
+    *            the partition group to target.
+    * @param mode The mode specifying how the mutations should be filtered.
+    *             See [[MutationsFilteringMode]].
+    * @param mappingFunc The function to use to transformm the mutations.
+    * @return A map of new [[com.talena.agents.couchbase.mstore.MappedMutations]] objects.
+    */
+//  def mapMutations[A: ClassTag](ctx: PartitionGroupContext, mode: MutationsFilteringMode,
+//      mappingFunc: MutationTuple => A): MappedMutations[A]
+
+}
+
+/** Companion object providing a factory method to instantiate a specific PartitionGroupManager
+  * implementation based on the Spark configuration object passed in.
+  *
+  * The TwoLevelPartitionGroupManager is the current default implementation that is chosen.
+  */
+object PartitionGroupManager {
+  def apply(conf: SparkConf, dataRepo: String, job: String): PartitionGroupManager = {
+    CStoreProps.PartitionGroupManager(conf) match {
+      case "TwoLevelPartitionGroupManager" => new TwoLevelPartitionGroupManager(conf, dataRepo, job)
+      case unsupported => throw new IllegalArgumentException(
+        "Unsupported partition group manager: " + unsupported)
+    }
+  }
+}

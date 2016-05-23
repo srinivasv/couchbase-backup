@@ -1,6 +1,6 @@
-package com.talena.agents.couchbase.mstore.iterable
+package com.talena.agents.couchbase.cstore.iterable
 
-import com.talena.agents.couchbase.mstore.{BucketProps, Env, PartitionGroupContext}
+import com.talena.agents.couchbase.cstore.BucketProps
 
 import org.apache.spark.SparkConf
 
@@ -14,16 +14,10 @@ extends MIterable(conf, bucketProps) {
     * concatenated iterator, we build a [[com.talena.agents.couchbase.mstore.PartitionGroupContext]]
     * object by passing the only Env object that we have, and return that to the caller.
     */
-  override def iterator(): Iterator[PartitionGroupContext] = {
+  override def iterator(): Iterator[(String, String)] = {
     buckets.tail
       .foldLeft(buckets.head)((bucket1, bucket2) => bucket1 ++ bucket2)
-      .map({ case (bucket, pgroup) =>
-        PartitionGroupContext(pgroup.toString, bucket, env)
+      .map({ case (bucket, pgid) => (bucket, pgid.toString)
       })
   }
-
-  override def stop() = env.sparkCtx.stop()
-
-  /** The sole Env object we use in this iterable */
-  val env: Env = newEnv()
 }

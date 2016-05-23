@@ -1,4 +1,4 @@
-package com.talena.agents.couchbase.mstore
+package com.talena.agents.couchbase.cstore
 
 import com.typesafe.scalalogging.LazyLogging
 

@@ -1,4 +1,4 @@
-package com.talena.agents.couchbase.mstore
+package com.talena.agents.couchbase.cstore
 
 import com.typesafe.scalalogging.LazyLogging
 
@@ -6,7 +6,7 @@ import org.apache.hadoop.fs.{FileStatus, FileSystem, Path}
 
 import org.apache.spark.SparkConf
 
-object MStoreProps extends LazyLogging {
+object CStoreProps extends LazyLogging {
   case object Iterable {
     def apply(c: SparkConf) = c.get("mstore.iterable", "SequentialIterable")
   }
