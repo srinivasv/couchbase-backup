@@ -14,44 +14,43 @@ case class Filters() extends Type
 case class Mutations() extends Type
 case class All() extends Type
 
-sealed trait Source {
-  def getSnapshotOrAbort(msg: String): String = this match {
-    case Snapshot(s) => s
-    case _ => throw new IllegalArgumentException(msg)
-  }
-}
+sealed trait Source
 case class Mainline() extends Source
-case class Snapshot(s: String) extends Source
+case class Snapshot(id: String) extends Source
 
 case class PGroup[A <: Type](dataRepo: String, job: String, bucket: String, id: String)
 
-@annotation.implicitNotFound(msg = "${A} is not compactible")
-trait Compactible[A <: Type] {
-  def compact(pg: PGroup[A], src: Source, to: String): Runnable[Unit]
+@annotation.implicitNotFound(msg = "Combination (${A}, ${B}) is not compactible")
+trait Compactible[A <: Type, B <: Source] {
+  def compact(pg: PGroup[A], src: B, to: String): Runnable[Unit]
   def move(pg: PGroup[A], from: String): Runnable[Unit]
   def cleanup(pg: PGroup[A]): Runnable[Unit]
 }
 
-@annotation.implicitNotFound(msg = "${A} is not mappable")
+@annotation.implicitNotFound(msg = "Combination (${A}, ${B}) is not mappable")
 trait Mappable[A <: Type, B <: Source] {
-  def map[C: ClassTag](pg: PGroup[A], src: B, f: MutationTuple => C): Runnable[RDD[C]]
+  def map[C: ClassTag](pg: PGroup[A], src: B, f: MutationTuple => C)
+  : Runnable[Transformable[RDD[C]]]
 }
 
 object implicits {
-  def compact[A <: Type: Compactible](pg: PGroup[A], src: Source, to: String): Runnable[Unit] = {
-    implicitly[Compactible[A]].compact(pg, src, to)
+  def compact[A <: Type, B <: Source](pg: PGroup[A], src: B, to: String)
+      (implicit ev: Compactible[A, B]): Runnable[Unit] = {
+    ev.compact(pg, src, to)
   }
 
-  def move[A <: Type: Compactible](pg: PGroup[A], from: String): Runnable[Unit] = {
-    implicitly[Compactible[A]].move(pg, from)
+  def move[A <: Type, B <: Source](pg: PGroup[A], from: String)(implicit ev: Compactible[A, B])
+  : Runnable[Unit] = {
+    ev.move(pg, from)
   }
 
-  def cleanup[A <: Type: Compactible](pg: PGroup[A]): Runnable[Unit] = {
-    implicitly[Compactible[A]].cleanup(pg)
+  def cleanup[A <: Type, B <: Source](pg: PGroup[A])(implicit ev: Compactible[A, B])
+  : Runnable[Unit] = {
+    ev.cleanup(pg)
   }
 
-  def map[A <: Type, B <: Source, C: ClassTag](pg: PGroup[A], src: B, f: MutationTuple => C)(implicit ev: Mappable[A, B])
-  : Runnable[RDD[C]] = {
+  def map[A <: Type, B <: Source, C: ClassTag](pg: PGroup[A], src: B, f: MutationTuple => C)
+      (implicit ev: Mappable[A, B]): Runnable[Transformable[RDD[C]]] = {
     ev.map[C](pg, src, f)
   }
 }

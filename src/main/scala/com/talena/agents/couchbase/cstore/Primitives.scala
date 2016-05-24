@@ -32,9 +32,9 @@ case class Env(sc: SparkContext)
 
 @annotation.implicitNotFound(msg = "${A} is not readable")
 trait Readable[A] {
-  def read(path: String): Runnable[Option[Transformable[RDD[A]]]]
-  def readOrGetEmpty(path: String): Runnable[Transformable[RDD[A]]]
-  def readOrAbort(path: String, msg: String): Runnable[Transformable[RDD[A]]]
+  def read(path: String): Runnable[Option[RDD[A]]]
+  def readOrGetEmpty(path: String): Runnable[RDD[A]]
+  def readOrAbort(path: String, msg: String): Runnable[RDD[A]]
 }
 
 @annotation.implicitNotFound(msg = "${A} is not writable")
@@ -54,13 +54,13 @@ trait Broadcastable[A, B] {
 
 object primitives extends LazyLogging {
   object implicits {
-    def read[A: Readable](path: String): Runnable[Option[Transformable[RDD[A]]]] =
+    def read[A: Readable](path: String): Runnable[Option[RDD[A]]] =
       implicitly[Readable[A]].read(path)
 
-    def readOrGetEmpty[A: Readable](path: String): Runnable[Transformable[RDD[A]]] =
+    def readOrGetEmpty[A: Readable](path: String): Runnable[RDD[A]] =
       implicitly[Readable[A]].readOrGetEmpty(path)
 
-    def readOrAbort[A: Readable](path: String, msg: String): Runnable[Transformable[RDD[A]]] =
+    def readOrAbort[A: Readable](path: String, msg: String): Runnable[RDD[A]] =
       implicitly[Readable[A]].readOrAbort(path, msg)
 
     def write[A: Writable](a: RDD[A], path: String): Runnable[Unit] =
@@ -75,22 +75,21 @@ object primitives extends LazyLogging {
 
   implicit object MutationsReaderWriter extends Readable[MutationTuple]
   with Writable[MutationTuple] {
-    override def read(path: String): Runnable[Option[Transformable[RDD[MutationTuple]]]] = {
+    override def read(path: String): Runnable[Option[RDD[MutationTuple]]] = {
       Runnable(env => {
         val fullPath = path + CStoreProps.MutationsFileExtension(env.sc.getConf)
         val fs = FileSystem.get(env.sc.hadoopConfiguration)
         Utils.listFiles(fs, new Path(fullPath))
-          .map(_ => Transformable(
-            env.sc.sequenceFile[NullWritable, MutationTuple](fullPath).map({ case (_, v) => v })))
+          .map(_ =>
+            env.sc.sequenceFile[NullWritable, MutationTuple](fullPath).map({ case (_, v) => v }))
       })
     }
 
-    override def readOrGetEmpty(path: String): Runnable[Transformable[RDD[MutationTuple]]] = {
-      Runnable(env => Transformable(env.sc.emptyRDD[MutationTuple]))
+    override def readOrGetEmpty(path: String): Runnable[RDD[MutationTuple]] = {
+      Runnable(env => env.sc.emptyRDD[MutationTuple])
     }
 
-    override def readOrAbort(path: String, msg: String)
-    : Runnable[Transformable[RDD[MutationTuple]]] = {
+    override def readOrAbort(path: String, msg: String): Runnable[RDD[MutationTuple]] = {
       _readOrAbort[MutationTuple](read(path), s"$msg: $path")
     }
 
@@ -100,22 +99,21 @@ object primitives extends LazyLogging {
   }
 
   implicit object FilterReaderWriter extends Readable[FilterTuple] with Writable[FilterTuple] {
-    override def read(path: String): Runnable[Option[Transformable[RDD[FilterTuple]]]] = {
+    override def read(path: String): Runnable[Option[RDD[FilterTuple]]] = {
       Runnable(env => {
         val fullPath = path + CStoreProps.FilterFileExtension(env.sc.getConf)
         val fs = FileSystem.get(env.sc.hadoopConfiguration)
         Utils.listFiles(fs, new Path(fullPath))
-          .map(_ => Transformable(
-            env.sc.sequenceFile[NullWritable, FilterTuple](fullPath).map({ case (_, v) => v })))
+          .map(_ =>
+            env.sc.sequenceFile[NullWritable, FilterTuple](fullPath).map({ case (_, v) => v }))
       })
     }
 
-    override def readOrGetEmpty(path: String): Runnable[Transformable[RDD[FilterTuple]]] = {
-      Runnable(env => Transformable(env.sc.emptyRDD[FilterTuple]))
+    override def readOrGetEmpty(path: String): Runnable[RDD[FilterTuple]] = {
+      Runnable(env => env.sc.emptyRDD[FilterTuple])
     }
 
-    override def readOrAbort(path: String, msg: String)
-    : Runnable[Transformable[RDD[FilterTuple]]] = {
+    override def readOrAbort(path: String, msg: String): Runnable[RDD[FilterTuple]] = {
       _readOrAbort[FilterTuple](read(path), s"$msg: $path")
     }
 
@@ -125,22 +123,21 @@ object primitives extends LazyLogging {
   }
 
   implicit object RBLogReader extends Readable[RBLogTuple] {
-    override def read(path: String): Runnable[Option[Transformable[RDD[RBLogTuple]]]] = {
+    override def read(path: String): Runnable[Option[RDD[RBLogTuple]]] = {
       Runnable(env => {
         val fullPath = path + CStoreProps.RBLogFileExtension(env.sc.getConf)
         val fs = FileSystem.get(env.sc.hadoopConfiguration)
         Utils.listFiles(fs, new Path(fullPath))
-          .map(_ => Transformable(
-            env.sc.sequenceFile[NullWritable, RBLogTuple](fullPath).map({ case (_, v) => v })))
+          .map(_ =>
+            env.sc.sequenceFile[NullWritable, RBLogTuple](fullPath).map({ case (_, v) => v }))
       })
     }
 
-    override def readOrGetEmpty(path: String): Runnable[Transformable[RDD[RBLogTuple]]] = {
-      Runnable(env => Transformable(env.sc.emptyRDD[RBLogTuple]))
+    override def readOrGetEmpty(path: String): Runnable[RDD[RBLogTuple]] = {
+      Runnable(env => env.sc.emptyRDD[RBLogTuple])
     }
 
-    override def readOrAbort(path: String, msg: String)
-    : Runnable[Transformable[RDD[RBLogTuple]]] = {
+    override def readOrAbort(path: String, msg: String): Runnable[RDD[RBLogTuple]] = {
       _readOrAbort[RBLogTuple](read(path), s"$msg: $path")
     }
   }
@@ -183,8 +180,7 @@ object primitives extends LazyLogging {
     }
   }
 
-  private def _readOrAbort[A](rOpt: Runnable[Option[Transformable[RDD[A]]]], msg: String)
-  : Runnable[Transformable[RDD[A]]] = {
+  private def _readOrAbort[A](rOpt: Runnable[Option[RDD[A]]], msg: String): Runnable[RDD[A]] = {
     for {
       r0 <- rOpt
       r1 = r0 match {
