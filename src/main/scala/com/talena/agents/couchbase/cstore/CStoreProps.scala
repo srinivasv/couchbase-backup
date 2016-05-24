@@ -11,24 +11,8 @@ object CStoreProps extends LazyLogging {
     def apply(c: SparkConf) = c.get("mstore.iterable", "SequentialIterable")
   }
 
-  case object PartitionGroupManager {
-    def apply(c: SparkConf) = c.get("mstore.partitionGroupManager", "TwoLevelPartitionGroupManager")
-  }
-
-  case object TwoLevelPartitionGroupManagerL1CompactionThreshold {
-    def apply(c: SparkConf) = c.get("mstore.twoLevelPartitionGroupManager.l1CompactionThreshold", "0")
-  }
-
-  case object FilterDeduplicationStrategy {
-    def apply(c: SparkConf) = c.get("mstore.filterDeduplicationStrategy", "SparkSQL")
-  }
-
-  case object FilterCompactionStrategy {
-    def apply(c: SparkConf) = c.get("mstore.filterCompactionStrategy", "SparkRDD")
-  }
-
-  case object MutationsMappingStrategy {
-    def apply(c: SparkConf) = c.get("mstore.mutationsMappingStrategy", "SparkRDD")
+  case object TwoLevelPGroupL1CompactionThreshold {
+    def apply(c: SparkConf) = c.get("mstore.twoLevelPGroup.l1CompactionThreshold", "10")
   }
 
   case object MutationsFileExtension {

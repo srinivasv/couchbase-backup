@@ -13,8 +13,6 @@ object Utils extends LazyLogging {
 
   def listFiles(fs: FileSystem, glob: Path): Option[Array[FileStatus]] = {
     val files = fs.globStatus(glob)
-    Some(files).filter(f => f.length > 0)
+    if (files == null) None else Some(files).filter(f => f.length > 0)
   }
-
-  def buildFSPath(l: List[Option[String]]): String = l.flatten.mkString("/", "/", "/")
 }

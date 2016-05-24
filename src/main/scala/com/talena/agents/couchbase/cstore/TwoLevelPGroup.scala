@@ -7,6 +7,8 @@ import com.talena.agents.couchbase.cstore._
 
 import com.typesafe.scalalogging.LazyLogging
 
+import org.apache.hadoop.fs.{FileStatus, FileSystem, Path}
+
 import org.apache.spark.broadcast.Broadcast
 import org.apache.spark.rdd.RDD
 
@@ -20,18 +22,12 @@ object twolevel extends LazyLogging {
   implicit object FilterCompactor extends Compactible[Filters, Mainline] {
     override def compact(pg: PGroup[Filters], _unused: Mainline, to: String): Runnable[Unit] = {
       Runnable(env => {
-        val (l0, l1) = (l0Path(pg), l1Path(pg))
-        val dest = l1PathWithPrefix(to)(pg)
-        logger.info(s"L0 location: $l0, L1 location: $l1")
-        logger.info(s"Compacted L1 filter for $pg will be written to $dest")
-
-        val f0 = readOrAbort[FilterTuple](l0, s"L0 filter file missing for $pg")
-        val f1 = readOrGetEmpty[FilterTuple](l1)
-        val r0 = readOrGetEmpty[RBLogTuple](l0)
-
+        val (l0Path, l1Path) = (l0.path(pg), l1.path(pg))
         for {
-          f1a <- Pipelines.compactFilter(f1(env), f0(env), r0(env))
-          r = write(f1a, dest)
+          f <- compactL1Filter(env, pg, l0Path, l1Path, to)
+          d = l1.prefixedPath(pg, to)
+          _ = logger.info(s"Compacted L1 filter for $pg will be written to $d")
+          r = write(f, d)
         } yield(r(env))
       })
     }
@@ -48,22 +44,19 @@ object twolevel extends LazyLogging {
   implicit object MutationsCompactor extends Compactible[Mutations, Snapshot] {
     override def compact(pg: PGroup[Mutations], snap: Snapshot, to: String): Runnable[Unit] = {
       Runnable(env => {
-        val l1 = l1PathForSnapshot(snap.id)(pg)
-        val dest = l1PathWithPrefix(to)(pg)
-        logger.info(s"L1 location: $l1")
-        logger.info(s"Compacted L1 mutations for $pg will be written to $dest")
 
-        val fs = FileSystem.get(env.sc.hadoopConfiguration)
-        val fullPath = l1 + CStoreProps.MutationsFileExtension(env.sc.getConf)
-        Utils.listFiles(fs, new Path(fullPath))
-
-        val f1 = readOrAbort[FilterTuple](l1, s"L1 filter file missing for $pg")
-        val m1 = readOrAbort[MutationTuple](l1, s"L1 mutations files missing for $pg")
-
-        for {
-          m1a <- Pipelines.compactMutations(m1(env), f1(env))
-          r = write(m1a, dest)
-          } yield(r(env))
+        val l1Path = l1.snapshotPath(pg, snap.id)
+        mutationsCompactionCheck(env, l1Path)
+          .filter({ case(a, t) => a.length > t })
+          .map({ case(_, t) =>
+            for {
+              m <- compactL1Mutations(env, pg, l1Path, to, t)
+              d = l1.prefixedPath(pg, to)
+              _ = logger.info(s"Compacted L1 mutations for $pg will be written to $d")
+              r = write(m, d)
+            } yield(r(env))
+          })
+          .getOrElse(s"Skipping compaction for $pg")
       })
     }
 
@@ -79,22 +72,24 @@ object twolevel extends LazyLogging {
   implicit object FullCompactor extends Compactible[All, Mainline] {
     override def compact(pg: PGroup[All], _unused: Mainline, to: String): Runnable[Unit] = {
       Runnable(env => {
-        val (l0, l1) = (l0Path(pg), l1Path(pg))
-        val dest = l1PathWithPrefix(to)(pg)
-        logger.info(s"L0 location: $l0, L1 location: $l1")
-        logger.info(s"Compacted L1 filter and mutations for $pg will be written to $dest")
-
-        val f0 = readOrAbort[FilterTuple](l0, s"L0 filter file missing for $pg")
-        val f1 = readOrGetEmpty[FilterTuple](l1)
-        val r0 = readOrGetEmpty[RBLogTuple](l0)
-        val m1 = readOrGetEmpty[MutationTuple](l1)
-
+        val (l0Path, l1Path) = (l0.path(pg), l1.path(pg))
         for {
-          f1a <- Pipelines.compactFilter(f1(env), f0(env), r0(env))
-          m1a <- Pipelines.compactMutations(m1(env), f1a)
-          rf = write(f1a, dest)
-          rm = write(m1a, dest)
-        } yield(rf(env), rm(env))
+          f <- compactL1Filter(env, pg, l0Path, l1Path, to)
+          d = l1.prefixedPath(pg, to)
+          _ = logger.info(s"Compacted L1 filter for $pg will be written to $d")
+          rf = write(f, d)
+
+          _ = mutationsCompactionCheck(env, l1Path)
+                .filter({ case(a, t) => a.length > t })
+                .map({ case(_, t) =>
+                  for {
+                    m <- compactL1Mutations(env, pg, l1Path, to, t)
+                    _ = logger.info(s"Compacted L1 mutations for $pg will be written to $d")
+                    rm = write(m, d)
+                  } yield(rm(env))
+                })
+                .getOrElse(s"Skipping compaction for $pg")
+        } yield(rf(env))
       })
     }
 
@@ -111,11 +106,11 @@ object twolevel extends LazyLogging {
     override def map[C: ClassTag](pg: PGroup[Mutations], snap: Snapshot, f: MutationTuple => C)
     : Runnable[Transformable[RDD[C]]] = {
       Runnable(env => {
-        val l1 = l1PathForSnapshot(snap.id)(pg)
-        logger.info(s"L1 location: $l1")
+        val l1Path = l1.snapshotPath(pg, snap.id)
+        logger.info(s"L1 location: $l1Path")
 
-        val f1 = readOrAbort[FilterTuple](l1, s"L1 filter file missing for $pg")
-        val m1 = readOrAbort[MutationTuple](l1, s"L1 mutations files missing for $pg")
+        val f1 = readOrAbort[FilterTuple](l1Path, s"L1 filter file missing for $pg")
+        val m1 = readOrAbort[MutationTuple](l1Path, s"L1 mutations files missing for $pg")
 
         for {
           m1a <- Pipelines.compactMutations(m1(env), f1(env))
@@ -124,16 +119,51 @@ object twolevel extends LazyLogging {
     }
   }
 
-  private def l0Path = path(l0)(None, None) _
-  private def l1Path = path(l1)(None, None) _
-  private def l1PathWithPrefix(prefix: String) = path(l1)(Some(prefix), None) _
-  private def l1PathForSnapshot(snapshot: String) = path(l1)(None, Some(snapshot)) _
+  sealed trait level {
+    def path(pg: PGroup[_]) = {
+      mkString(List(pg.dataRepo, pg.job, pg.bucket, this.toString, pg.id))
+    }
 
-  private def path(level: level)(prefix: Option[String], snapshot: Option[String])(pg: PGroup[_])
-  : String = {
-    Utils.buildFSPath(List(
-      prefix, Some(pg.dataRepo), Some(pg.job), snapshot, Some(pg.bucket), Some(level.toString)
-    )) + pg.id
+    protected def mkString(l: List[String]) = l.mkString("/", "/", "")
+  }
+  case object l0 extends level
+  case object l1 extends level {
+    def prefixedPath(pg: PGroup[_], prefix: String) = {
+      mkString(List(prefix, pg.dataRepo, pg.job, pg.bucket, this.toString, pg.id))
+    }
+
+    def snapshotPath(pg: PGroup[_], snap: String) = {
+      mkString(List(pg.dataRepo, pg.job, snap, pg.bucket, this.toString, pg.id))
+    }
+  }
+
+  private def mutationsCompactionCheck(env: Env, path: String): Option[(Array[FileStatus], Int)] = {
+    val fs = FileSystem.get(env.sc.hadoopConfiguration)
+    val fullPath = path + CStoreProps.MutationsFileExtension(env.sc.getConf)
+    val threshold = CStoreProps.TwoLevelPGroupL1CompactionThreshold(env.sc.getConf).toInt
+    Utils.listFiles(fs, new Path(fullPath)).map(a => (a, threshold))
+  }
+
+  private def compactL1Filter(env: Env, pg: PGroup[_], l0Path: String, l1Path: String, to: String)
+  : Transformable[RDD[FilterTuple]] = {
+    logger.info(s"L0 location: $l0, L1 location: $l1Path")
+
+    val f0 = readOrAbort[FilterTuple](l0Path, s"L0 filter file missing for $pg")
+    val f1 = readOrGetEmpty[FilterTuple](l1Path)
+    val r0 = readOrGetEmpty[RBLogTuple](l0Path)
+
+    Pipelines.compactFilter(f1(env), f0(env), r0(env))
+  }
+
+  private def compactL1Mutations(env: Env, pg: PGroup[_], path: String, to: String, threshold: Int)
+  : Transformable[RDD[MutationTuple]] = {
+    logger.info(s"L1 location: $path")
+    logger.info(s"Compacting mutations for $pg as threshold of $threshold files has exceeded")
+
+    val f1 = readOrAbort[FilterTuple](path, s"L1 filter file missing for $pg")
+    val m1 = readOrAbort[MutationTuple](path, s"L1 mutations files missing for $pg")
+
+    Pipelines.compactMutations(m1(env), f1(env))
   }
 }
 
@@ -174,7 +204,3 @@ private object Pipelines {
     }
   }
 }
-
-sealed trait level
-case object l0 extends level
-case object l1 extends level
