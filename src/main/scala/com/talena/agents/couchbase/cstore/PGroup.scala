@@ -7,12 +7,19 @@ import com.typesafe.scalalogging.LazyLogging
 
 import org.apache.spark.rdd.RDD
 
+import scala.reflect.ClassTag
+
 sealed trait Type
 case class Filters() extends Type
 case class Mutations() extends Type
 case class All() extends Type
 
-sealed trait Source
+sealed trait Source {
+  def getSnapshotOrAbort(msg: String): String = this match {
+    case Snapshot(s) => s
+    case _ => throw new IllegalArgumentException(msg)
+  }
+}
 case class Mainline() extends Source
 case class Snapshot(s: String) extends Source
 
@@ -26,8 +33,8 @@ trait Compactible[A <: Type] {
 }
 
 @annotation.implicitNotFound(msg = "${A} is not mappable")
-trait Mappable[A <: Type] {
-  def map[B](pg: PGroup[A], src: Source, f: MutationTuple => B): Runnable[RDD[B]]
+trait Mappable[A <: Type, B <: Source] {
+  def map[C: ClassTag](pg: PGroup[A], src: B, f: MutationTuple => C): Runnable[RDD[C]]
 }
 
 object implicits {
@@ -43,8 +50,8 @@ object implicits {
     implicitly[Compactible[A]].cleanup(pg)
   }
 
-  def map[A <: Type: Mappable, B](pg: PGroup[A], src: Source, f: MutationTuple => B)
-  : Runnable[RDD[B]] = {
-    implicitly[Mappable[A]].map(pg, src, f)
+  def map[A <: Type, B <: Source, C: ClassTag](pg: PGroup[A], src: B, f: MutationTuple => C)(implicit ev: Mappable[A, B])
+  : Runnable[RDD[C]] = {
+    ev.map[C](pg, src, f)
   }
 }
