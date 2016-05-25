@@ -27,10 +27,9 @@ trait Compactible[A <: Type, B <: Source] {
   def cleanup(pg: PGroup[A]): Runnable[Unit]
 }
 
-@annotation.implicitNotFound(msg = "Combination (${A}, ${B}) is not mappable")
-trait Mappable[A <: Type, B <: Source] {
-  def map[C: ClassTag](pg: PGroup[A], src: B, f: MutationTuple => C)
-  : Runnable[Transformable[RDD[C]]]
+@annotation.implicitNotFound(msg = "Combination (${A}, ${B}) is not readable")
+trait Readable[A <: Type, B <: Source, C] {
+  def read(pg: PGroup[A], src: B): Runnable[RDD[C]]
 }
 
 object implicits {
@@ -49,8 +48,8 @@ object implicits {
     ev.cleanup(pg)
   }
 
-  def map[A <: Type, B <: Source, C: ClassTag](pg: PGroup[A], src: B, f: MutationTuple => C)
-      (implicit ev: Mappable[A, B]): Runnable[Transformable[RDD[C]]] = {
-    ev.map[C](pg, src, f)
+  def read[A <: Type, B <: Source, C](pg: PGroup[A], src: B)(implicit ev: Readable[A, B, C])
+  : Runnable[RDD[C]] = {
+    ev.read(pg, src)
   }
 }

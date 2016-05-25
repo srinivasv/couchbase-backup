@@ -114,16 +114,14 @@ object CStore extends LazyLogging {
     logger.info(s"Begin compactFilters() request")
     logger.info(s"dataRepo: $dataRepo, job: $job, bProps: $bProps, tmpLoc: $tmpLoc")
 
-    using(dataRepo, job, bProps)(
-      (pgid, bucket) => {
-        import twolevel.FilterCompactor
-        val pg = PGroup[Filters](dataRepo, job, bucket, pgid)
-        val runnable = compact(pg, Mainline(), tmpLoc)
+    using(dataRepo, job, bProps)((pgid, bucket) => {
+      import twolevel.FilterCompactor
+      val pg = PGroup[Filters](dataRepo, job, bucket, pgid)
+      val runnable = compact(pg, Mainline(), tmpLoc)
 
-        logger.info(s"Compacting filters for $pg")
-        runnable(env)
-      }
-    )
+      logger.info(s"Compacting filters for $pg")
+      runnable(env)
+    })
 
     // /** Move the compacted filters and the uncompacted mutations to their final location */
     // using(dataRepo, job, bProps)((manager, pgCtx) => {
@@ -194,30 +192,43 @@ object CStore extends LazyLogging {
   //   logger.info(s"End moveCompactedMutations() request")
   // }
 
-  // /** "Maps" mutations from a snapshot using the given function (a callback) potentially
-  //   * transforming it to something else.
-  //   *
-  //   * Will be used by the recovery, masking and sampling agents.
-  //   *
-  //   * @param dataRepo UUID of the data repository
-  //   * @param job ID of the job
-  //   * @param bProps A list of [[BucketProps]] objects describing the buckets involved
-  //   * @param snapshot The specific snapshot to use for reading mutations
-  //   * @param mapper An instance of an[[com.talena.agents.couchbase.mstore.MutationsMapper]] derived
-  //   *               class that will do the actual transformation of the mutations.
-  //   * @return The transformed mutations as a [[MappedMutations]] object of type A
-  //   */
-  // def mapMutations[A: ClassTag](dataRepo: String, job: String, bProps: List[BucketProps],
-  //     snapshot: String, mapper: MutationsMapper[A]) = {
-  //   logger.info(s"Begin mapMutations() request")
-  //   logger.info(s"dataRepo: $dataRepo, job: $job, bProps: $bProps, snapshot: $snapshot")
+  /** "Maps" mutations from a snapshot using the given function (a callback) potentially
+    * transforming it to something else.
+    *
+    * Will be used by the recovery, masking and sampling agents.
+    *
+    * @param dataRepo UUID of the data repository
+    * @param job ID of the job
+    * @param bProps A list of [[BucketProps]] objects describing the buckets involved
+    * @param snapshot The specific snapshot to use for reading mutations
+    * @param mapper An instance of an[[com.talena.agents.couchbase.mstore.MutationsMapper]] derived
+    *               class that will do the actual transformation of the mutations.
+    * @return The transformed mutations as a [[MappedMutations]] object of type A
+    */
+  def mapMutations[A: ClassTag](env: Env, dataRepo: String, job: String, bProps: List[BucketProps],
+      snapshot: String, mapper: MutationsMapper[A]) = {
+    logger.info(s"Begin mapMutations() request")
+    logger.info(s"dataRepo: $dataRepo, job: $job, bProps: $bProps, snapshot: $snapshot")
 
-  //   using(dataRepo, job, bProps)((manager, pgCtx) => {
-  //     logger.info(s"Mapping mutations for $pgCtx")
-  //     mapper.setup()
-  //     manager.mapMutations[A](pgCtx, Offline(snapshot), m => mapper.map(m))
-  //     mapper.teardown()
-  //   })
+    using(dataRepo, job, bProps)((pgid, bucket) => {
+      import twolevel.CompactedMutationsReader
+
+      val pg = PGroup[Mutations](dataRepo, job, bucket, pgid)
+      val runnable = for {
+        rdd <- read(pg, Snapshot(snapshot))
+        mappedRDD = rdd.mapPartitions[A](
+          { partition =>
+            for {
+              mutation <- partition
+            } yield mapper.map(mutation)
+          }, preservesPartitioning = true)
+      } yield mappedRDD
+
+      mapper.setup()
+      runnable(env)
+      mapper.teardown()
+    })
+  }
 
   //   logger.info(s"End mapMutations() request")
   // }
@@ -261,14 +272,6 @@ object CStore extends LazyLogging {
   * @param numPartitionGroups The number of partitionGroups in the bucket.
   */
 case class BucketProps(name: String, numPartitionGroups: Integer)
-
-/** Defines what a partition group is.
-  *
-  * @param id An ID for the partition group.
-  * @param bucket The Couchbase bucket to which the partition group belongs.
-  * @param env A reference to the [[Env]] object assigned to this partition group.
-  */
-case class PartitionGroupContext(id: String, bucket: String)
 
 /** An interface to support arbitrary transformations ("maps") over mutations.
   *

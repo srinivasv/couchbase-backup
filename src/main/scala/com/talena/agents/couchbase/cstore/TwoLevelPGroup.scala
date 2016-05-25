@@ -23,12 +23,13 @@ object twolevel extends LazyLogging {
     override def compact(pg: PGroup[Filters], _unused: Mainline, to: String): Runnable[Unit] = {
       Runnable(env => {
         val (l0Path, l1Path) = (l0.path(pg), l1.path(pg))
+        logger.info(s"Compacting L1 filter for $pg")
+
         for {
-          f <- compactL1Filter(env, pg, l0Path, l1Path, to)
+          f <- compactL1Filter(env, pg, l0Path, l1Path)
           d = l1.prefixedPath(pg, to)
-          _ = logger.info(s"Compacted L1 filter for $pg will be written to $d")
           r = write(f, d)
-        } yield(r(env))
+        } yield r(env)
       })
     }
 
@@ -49,12 +50,12 @@ object twolevel extends LazyLogging {
         mutationsCompactionCheck(env, l1Path)
           .filter({ case(a, t) => a.length > t })
           .map({ case(_, t) =>
+            logger.info(s"Compacting L1 mutations for $pg. Threshold is $t files")
             for {
-              m <- compactL1Mutations(env, pg, l1Path, to, t)
+              m <- compactL1Mutations(env, pg, l1Path)
               d = l1.prefixedPath(pg, to)
-              _ = logger.info(s"Compacted L1 mutations for $pg will be written to $d")
               r = write(m, d)
-            } yield(r(env))
+            } yield r(env)
           })
           .getOrElse(s"Skipping compaction for $pg")
       })
@@ -73,23 +74,24 @@ object twolevel extends LazyLogging {
     override def compact(pg: PGroup[All], _unused: Mainline, to: String): Runnable[Unit] = {
       Runnable(env => {
         val (l0Path, l1Path) = (l0.path(pg), l1.path(pg))
+        logger.info(s"Compacting L1 filter for $pg")
+
         for {
-          f <- compactL1Filter(env, pg, l0Path, l1Path, to)
+          f <- compactL1Filter(env, pg, l0Path, l1Path)
           d = l1.prefixedPath(pg, to)
-          _ = logger.info(s"Compacted L1 filter for $pg will be written to $d")
           rf = write(f, d)
 
           _ = mutationsCompactionCheck(env, l1Path)
                 .filter({ case(a, t) => a.length > t })
                 .map({ case(_, t) =>
+                  logger.info(s"Compacting L1 mutations for $pg. Threshold is $t files")
                   for {
-                    m <- compactL1Mutations(env, pg, l1Path, to, t)
-                    _ = logger.info(s"Compacted L1 mutations for $pg will be written to $d")
+                    m <- compactL1Mutations(env, pg, l1Path)
                     rm = write(m, d)
-                  } yield(rm(env))
+                  } yield rm(env)
                 })
                 .getOrElse(s"Skipping compaction for $pg")
-        } yield(rf(env))
+        } yield rf(env)
       })
     }
 
@@ -102,38 +104,12 @@ object twolevel extends LazyLogging {
     }
   }
 
-  implicit object MutationsMapper extends Mappable[Mutations, Snapshot] {
-    override def map[C: ClassTag](pg: PGroup[Mutations], snap: Snapshot, f: MutationTuple => C)
-    : Runnable[Transformable[RDD[C]]] = {
+  implicit object CompactedMutationsReader extends Readable[Mutations, Snapshot, MutationTuple] {
+    override def read(pg: PGroup[Mutations], snap: Snapshot): Runnable[RDD[MutationTuple]] = {
       Runnable(env => {
         val l1Path = l1.snapshotPath(pg, snap.id)
-        logger.info(s"L1 location: $l1Path")
-
-        val f1 = readOrAbort[FilterTuple](l1Path, s"L1 filter file missing for $pg")
-        val m1 = readOrAbort[MutationTuple](l1Path, s"L1 mutations files missing for $pg")
-
-        for {
-          m1a <- Pipelines.compactMutations(m1(env), f1(env))
-        } yield(m1a.map[C](f))
+        compactL1Mutations(env, pg, l1Path).get()
       })
-    }
-  }
-
-  sealed trait level {
-    def path(pg: PGroup[_]) = {
-      mkString(List(pg.dataRepo, pg.job, pg.bucket, this.toString, pg.id))
-    }
-
-    protected def mkString(l: List[String]) = l.mkString("/", "/", "")
-  }
-  case object l0 extends level
-  case object l1 extends level {
-    def prefixedPath(pg: PGroup[_], prefix: String) = {
-      mkString(List(prefix, pg.dataRepo, pg.job, pg.bucket, this.toString, pg.id))
-    }
-
-    def snapshotPath(pg: PGroup[_], snap: String) = {
-      mkString(List(pg.dataRepo, pg.job, snap, pg.bucket, this.toString, pg.id))
     }
   }
 
@@ -144,7 +120,7 @@ object twolevel extends LazyLogging {
     Utils.listFiles(fs, new Path(fullPath)).map(a => (a, threshold))
   }
 
-  private def compactL1Filter(env: Env, pg: PGroup[_], l0Path: String, l1Path: String, to: String)
+  private def compactL1Filter(env: Env, pg: PGroup[_], l0Path: String, l1Path: String)
   : Transformable[RDD[FilterTuple]] = {
     logger.info(s"L0 location: $l0, L1 location: $l1Path")
 
@@ -155,10 +131,9 @@ object twolevel extends LazyLogging {
     Pipelines.compactFilter(f1(env), f0(env), r0(env))
   }
 
-  private def compactL1Mutations(env: Env, pg: PGroup[_], path: String, to: String, threshold: Int)
+  private def compactL1Mutations(env: Env, pg: PGroup[_], path: String)
   : Transformable[RDD[MutationTuple]] = {
     logger.info(s"L1 location: $path")
-    logger.info(s"Compacting mutations for $pg as threshold of $threshold files has exceeded")
 
     val f1 = readOrAbort[FilterTuple](path, s"L1 filter file missing for $pg")
     val m1 = readOrAbort[MutationTuple](path, s"L1 mutations files missing for $pg")
@@ -171,13 +146,13 @@ private object Pipelines {
   def compactFilter: (RDD[FilterTuple], RDD[FilterTuple], RDD[RBLogTuple]) =>
       Transformable[RDD[FilterTuple]] = {
     (f1, f0, r0) => {
+      import primitives.{FilterDeduplicator, FilterKeysBroadcaster, RBLogBroadcaster}
+      import primitives.implicits.{broadcast, deduplicate}
+
       def isValidKey: (FilterTuple, Broadcast[Set[String]]) => Boolean =
         (f, b) => !b.value(f.key)
       def isValidSeqno: (FilterTuple, Broadcast[Map[(Short, Long), Long]]) => Boolean =
         (f, b) => f.seqNo() < b.value.getOrElse((f.partitionId(), f.uuid()), f.seqNo() + 1)
-
-      import primitives.{FilterDeduplicator, FilterKeysBroadcaster, RBLogBroadcaster}
-      import primitives.implicits.{broadcast, deduplicate}
 
       for {
         r0a <- Transformable(r0)
@@ -186,7 +161,7 @@ private object Pipelines {
         f0b <- deduplicate(f0a)
         f0c <- broadcast(f0b)
         f1a <- Transformable(f1) if f1a.filter(f => isValidSeqno(f, r0b) && isValidKey(f, f0c))
-      } yield(f1a ++ f0b)
+      } yield f1a ++ f0b
     }
   }
 
@@ -196,11 +171,34 @@ private object Pipelines {
       import primitives.FilterSeqnoTuplesBroadcaster
       import primitives.implicits.broadcast
 
+      def isValidSeqnoTuple: (MutationTuple, Broadcast[Set[(Short, Long, Long)]]) => Boolean =
+        (m, b) => b.value((m.partitionId(), m.uuid(), m.seqNo()))
+
       for {
         f1a <- Transformable(f1)
         f1b <- broadcast(f1a)
-        m1a <- Transformable(m1) if m1a.filter(m => f1b.value((m.partitionId(), m.uuid(), m.seqNo())))
-      } yield(m1a)
+        m1a <- Transformable(m1) if m1a.filter(m => isValidSeqnoTuple(m, f1b))
+      } yield m1a
     }
   }
 }
+
+  sealed trait level {
+    def path(pg: PGroup[_]) = {
+      mkString(List(pg.dataRepo, pg.job, pg.bucket, this.toString, pg.id))
+    }
+
+    protected def mkString(l: List[String]) = l.mkString("/", "/", "")
+  }
+
+  case object l0 extends level
+
+  case object l1 extends level {
+    def prefixedPath(pg: PGroup[_], prefix: String) = {
+      mkString(List(prefix, pg.dataRepo, pg.job, pg.bucket, this.toString, pg.id))
+    }
+
+    def snapshotPath(pg: PGroup[_], snap: String) = {
+      mkString(List(pg.dataRepo, pg.job, snap, pg.bucket, this.toString, pg.id))
+    }
+  }
