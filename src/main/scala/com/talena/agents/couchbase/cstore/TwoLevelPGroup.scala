@@ -34,7 +34,14 @@ object twolevel extends LazyLogging {
     }
 
     override def move(pg: PGroup[Filters], from: String): Runnable[Unit] = {
-      Runnable(env => { println("move") })
+      Runnable(env => {
+        val ext = CStoreProps.FilterFileExtension(env.conf)
+        val fullFrom = l1.prefixedPath(pg, from) + ext
+        val fullTo = l1.path(pg) + ext
+        logger.info(s"Moving compacted L1 filter for $pg from $fullFrom to $fullTo")
+
+        env.fs.rename(new Path(fullFrom), new Path(fullTo))
+      })
     }
 
     override def cleanup(pg: PGroup[Filters]): Runnable[Unit] = {
@@ -114,10 +121,9 @@ object twolevel extends LazyLogging {
   }
 
   private def mutationsCompactionCheck(env: Env, path: String): Option[(Array[FileStatus], Int)] = {
-    val fs = FileSystem.get(env.sc.hadoopConfiguration)
-    val fullPath = path + CStoreProps.MutationsFileExtension(env.sc.getConf)
-    val threshold = CStoreProps.TwoLevelPGroupL1CompactionThreshold(env.sc.getConf).toInt
-    Utils.listFiles(fs, new Path(fullPath)).map(a => (a, threshold))
+    val fullPath = path + CStoreProps.MutationsFileExtension(env.conf)
+    val threshold = CStoreProps.TwoLevelPGroupL1CompactionThreshold(env.conf).toInt
+    Utils.listFiles(env.fs, new Path(fullPath)).map(a => (a, threshold))
   }
 
   private def compactL1Filter(env: Env, pg: PGroup[_], l0Path: String, l1Path: String)
