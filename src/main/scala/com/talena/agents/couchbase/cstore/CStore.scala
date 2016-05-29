@@ -15,256 +15,6 @@ import org.apache.spark.sql.SQLContext
 
 import scala.reflect.ClassTag
 
-/** A static object encapsulating all the possible CStore operations.
-  *
-  * This is the entry point for all the external entities, such as the scheduler and the recovery,
-  * masking and sampling agents.
-  */
-object CStore extends LazyLogging {
-  // /** Adds new buckets to the storage hierarchy.
-  //   *
-  //   * @param dataRepo UUID of the data repository
-  //   * @param job ID of the job
-  //   * @param bProps A list of [[BucketProps]] objects describing the buckets being added
-  //   */
-  // def addBuckets(dataRepo: String, job: String, bProps: List[BucketProps]) = {
-  //   logger.info(s"Begin addBuckets() request")
-  //   logger.info(s"dataRepo: $dataRepo, job: $job, bProps: $bProps")
-
-  //   using(dataRepo, job, bProps)((manager, pgCtx) => {
-  //     manager.addPartitionGroup(pgCtx)
-  //   })
-
-  //   logger.info(s"End addBuckets() request")
-  // }
-
-  // /** Removes existing buckets from the storage hierarchy.
-  //   *
-  //   * @param dataRepo UUID of the data repository
-  //   * @param job ID of the job
-  //   * @param bProps A list of [[BucketProps]] objects describing the buckets being removed
-  //   */
-  // def removeBuckets(dataRepo: String, job: String, bProps: List[BucketProps]) = {
-  //   logger.info(s"Begin removeBuckets() request")
-  //   logger.info(s"dataRepo: $dataRepo, job: $job, bProps: $bProps")
-
-  //   using(dataRepo, job, bProps)((manager, pgCtx) => {
-  //     manager.removePartitionGroup(pgCtx)
-  //   })
-
-  //   logger.info(s"End removeBuckets() request")
-  // }
-
-  // /** Compacts both the filters and mutations off the mainline, compacting the mutations after the
-  //   * filters have been compacted.
-  //   *
-  //   * @param dataRepo UUID of the data repository
-  //   * @param job ID of the job
-  //   * @param bProps A list of [[BucketProps]] objects describing the buckets involved
-  //   * @param tmpLoc A temporary location where the compacted filter will be written to. A subsequent
-  //   * move operation will move the compacted filter and mutations from the temporary to their final
-  //   * location.
-  //   */
-  // def compact(dataRepo: String, job: String, bProps: List[BucketProps], tmpLoc: String) = {
-  //   logger.info(s"Begin compact() request")
-  //   logger.info(s"dataRepo: $dataRepo, job: $job, bProps: $bProps, tmpLoc: $tmpLoc")
-
-  //   using(dataRepo, job, bProps)((manager, pgCtx) => {
-  //     logger.info(s"Compacting mutations for $pgCtx")
-  //     val compactedFilters = manager.compactFilters(pgCtx)
-
-  //     // Use the InlineWithFiltersCompaction mode of filtering the mutations (see
-  //     // [[com.talena.agents.couchbase.mstore.PartitionGroupManager.MutationsFilteringMode]])
-  //     val compactedMutations = manager.compactMutations(pgCtx, InlineWithFiltersCompaction(
-  //       compactedFilters))
-
-  //     manager.persistCompactedFilters(pgCtx, compactedFilters, tmpLoc)
-
-  //     // compactedMutations is an Option[Map[String, MappedMutations[MutationTuple]]]. Here, we
-  //     // invoke Option's map() method to extract the actual value (if it is present) and persist it.
-  //     // If Option is empty (None), it means there was nothing to compact.
-  //     compactedMutations
-  //       .map(m => manager.persistCompactedMutations(pgCtx, m, tmpLoc))
-  //       .getOrElse(logger.info(s"No mutations to compact for $pgCtx"))
-  //   })
-
-  //   /** Move the compacted filters and mutations to their final location */
-  //   using(dataRepo, job, bProps)((manager, pgCtx) => {
-  //     logger.info(s"Moving compacted mutations for $pgCtx to the mainline")
-  //     manager.moveCompactedFilters(pgCtx, tmpLoc)
-  //     manager.moveCompactedMutations(pgCtx, tmpLoc)
-  //   })
-
-  //   logger.info(s"End compact() request")
-  // }
-
-  /** Compacts one or more buckets' filters off the mainline.
-    *
-    * This method may be invoked on its own allowing us to decouple the filter and mutations
-    * compaction operations. Thus, mutations compaction may be run as an offline process if desired.
-    *
-    * @param dataRepo UUID of the data repository
-    * @param job ID of the job
-    * @param bProps A list of [[BucketProps]] objects describing the buckets involved
-    * @param tmpLoc A temporary location where the compacted filter will be written to. A subsequent
-    * move operation will move the compacted filter from the temporary to its final location.
-    */
-  def compactFilters(env: Env, dataRepo: String, job: String, bProps: List[BucketProps],
-      tmpLoc: String) = {
-    logger.info(s"Begin compactFilters() request")
-    logger.info(s"dataRepo: $dataRepo, job: $job, bProps: $bProps, tmpLoc: $tmpLoc")
-
-    using(dataRepo, job, bProps)((pgid, bucket) => {
-      import twolevel.FilterCompactor
-      val pg = PGroup[Filters](dataRepo, job, bucket, pgid)
-      val runnable = compact(pg, Mainline(), tmpLoc)
-
-      logger.info(s"Compacting filters for $pg")
-      runnable(env)
-    })
-
-    // /** Move the compacted filters and the uncompacted mutations to their final location */
-    // using(dataRepo, job, bProps)((manager, pgCtx) => {
-    //   logger.info(s"Moving compacted mutations for $pgCtx to the mainline")
-    //   manager.moveCompactedFilters(pgCtx, tmpLoc)
-    //   manager.moveUncompactedMutations(pgCtx)
-    // })
-
-    logger.info(s"End compactFilters() request")
-  }
-
-  // /** Compacts one or more buckets' mutations off a given snapshot if the compaction criteria is
-  //   * met.
-  //   *
-  //   * This method may be invoked in an offline mode so it could run as a background process.
-  //   *
-  //   * @param dataRepo UUID of the data repository
-  //   * @param job ID of the job
-  //   * @param bProps A list of [[BucketProps]] objects describing the buckets involved
-  //   * @param snapshot The specific snapshot to use for reading mutations
-  //   * @param tmpLoc A temporary location where the compacted mutations will be written to. A
-  //   * subsequent move operation will move the compacted mutations from the temporary to their final
-  //   * location.
-  //   */
-  // def compactMutations(dataRepo: String, job: String, bProps: List[BucketProps], snapshot: String,
-  //     tmpLoc: String) = {
-  //   logger.info(s"Begin compactMutations() request")
-  //   logger.info(s"dataRepo: $dataRepo, job: $job, bProps: $bProps, snapshot: $snapshot, " +
-  //     "tmpLoc: $tmpLoc")
-
-  //   using(dataRepo, job, bProps)((manager, pgCtx) => {
-  //     logger.info(s"Compacting mutations for $pgCtx in snapshot $snapshot")
-
-  //     // Use the Offline mode (based off a snapshot) of filtering the mutations (see
-  //     // [[com.talena.agents.couchbase.mstore.PartitionGroupManager.MutationsFilteringMode]])
-  //     val compactedMutations = manager.compactMutations(pgCtx, Offline(snapshot))
-
-  //     // compactedMutations is an Option[Map[String, MappedMutations[MutationTuple]]]. Here, we
-  //     // invoke Option's map() method to extract the actual value (if it is present) and persist it.
-  //     // If Option is empty (None), it means there was nothing to compact.
-  //     compactedMutations
-  //       .map(m => manager.persistCompactedMutations(pgCtx, m, tmpLoc))
-  //       .getOrElse(logger.info(s"No mutations to compact for $pgCtx in snapshot $snapshot"))
-  //   })
-
-  //   logger.info(s"End compactMutations() request")
-  // }
-
-  // /** Moves one or more buckets' compacted mutations generated by a previous call to
-  //   * compactMutations() from the temp location specified then to the mainline.
-  //   *
-  //   * @param dataRepo UUID of the data repository
-  //   * @param job ID of the job
-  //   * @param bProps A list of [[BucketProps]] objects describing the buckets involved
-  //   * @param tmpLoc The temporary location that was specified in the call to compactMutations()
-  //   * where the compacted mutations are now present.
-  //   */
-  // def moveCompactedMutations(dataRepo: String, job: String, bProps: List[BucketProps],
-  //     tmpLoc: String) = {
-  //   logger.info(s"Begin moveCompactedMutations() request")
-  //   logger.info(s"dataRepo: $dataRepo, job: $job, bProps: $bProps, tmpLoc: $tmpLoc")
-
-  //   using(dataRepo, job, bProps)((manager, pgCtx) => {
-  //     logger.info(s"Moving compacted mutations for $pgCtx to the mainline")
-  //     manager.moveCompactedMutations(pgCtx, tmpLoc)
-  //   })
-
-  //   logger.info(s"End moveCompactedMutations() request")
-  // }
-
-  /** "Maps" mutations from a snapshot using the given function (a callback) potentially
-    * transforming it to something else.
-    *
-    * Will be used by the recovery, masking and sampling agents.
-    *
-    * @param dataRepo UUID of the data repository
-    * @param job ID of the job
-    * @param bProps A list of [[BucketProps]] objects describing the buckets involved
-    * @param snapshot The specific snapshot to use for reading mutations
-    * @param mapper An instance of an[[com.talena.agents.couchbase.mstore.MutationsMapper]] derived
-    *               class that will do the actual transformation of the mutations.
-    * @return The transformed mutations as a [[MappedMutations]] object of type A
-    */
-  def mapMutations[A: ClassTag](env: Env, dataRepo: String, job: String, bProps: List[BucketProps],
-      snapshot: String, mapper: MutationsMapper[A]) = {
-    logger.info(s"Begin mapMutations() request")
-    logger.info(s"dataRepo: $dataRepo, job: $job, bProps: $bProps, snapshot: $snapshot")
-
-    using(dataRepo, job, bProps)((pgid, bucket) => {
-      import twolevel.CompactedMutationsReader
-
-      val pg = PGroup[Mutations](dataRepo, job, bucket, pgid)
-      val runnable = for {
-        rdd <- read(pg, Snapshot(snapshot))
-        mappedRDD = rdd.mapPartitions[A](
-          { partition =>
-            for {
-              mutation <- partition
-            } yield mapper.map(mutation)
-          }, preservesPartitioning = true)
-      } yield mappedRDD
-
-      mapper.setup()
-      runnable(env)
-      mapper.teardown()
-    })
-  }
-
-  //   logger.info(s"End mapMutations() request")
-  // }
-
-  /** A helper method to abstract out the common functionality from the public APIs of this class.
-    *
-    * Does the following:
-    * - Creates a new Spark configuration object.
-    * - Picks a suitable iterable based on the settings passed in the configuration object.
-    * - Similarly, picks an instance of PartitionGroupManager.
-    * - Invokes the iterable, and for each PartitionGroupContext object passed in by the iterable,
-    *   it invokes the provided function "f" with the following parameters:
-    *   - A reference to the manager object initialized above.
-    *   - The PartitionGroupContext object passed in by the iterable.
-    *
-    * This allows the callers of this helper method to simply pass in a function that's specific to
-    * their API and delegate all other tasks (described above) to this method.
-    *
-    * We use function currying here. There are two sets of parameters that this method expects:
-    * - The first is the set of dataRepo, job and bProps values.
-    * - The second is the function that needs to be invoked.
-    *
-    * Using currying here makes sense because at each of the call sites the code becomes easy and
-    * intuitive to read. For example, `using(dataRepo, job, bProps)(doSomething...)` can be read as
-    * "using the given parameters, do something".
-    */
-  private def using(dataRepo: String, job: String, bProps: List[BucketProps])
-      (f: (String, String) => Unit) = {
-    logger.info("Initializing CStore")
-    val conf = new SparkConf()
-    val iterable = MIterable(conf, bProps)
-    logger.info(s"conf: $conf, iterable: $iterable")
-
-    iterable.map({ case (bucket, pgid) => f(bucket, pgid) })
-  }
-}
 
 /** Defines the properties of Couchbase buckets.
   *
@@ -298,4 +48,175 @@ abstract class MutationsMapper[A] {
 
   /** Called once after mapping ends */
   def teardown(): Unit
+}
+
+/** A static object encapsulating all the possible CStore operations.
+  *
+  * This is the entry point for all the external entities, such as the scheduler and the recovery,
+  * masking and sampling agents.
+  */
+object CStore {
+  def compactFilters(repo: String, job: String, props: List[BucketProps], temp: String): Unit = {
+    val env = newEnv(s"CStore filter compaction for job $job")
+    RunnableCStore.compactFilters(repo, job, props, temp)(env)
+  }
+
+  def compactMutations(repo: String, job: String, props: List[BucketProps], snapshot: String,
+      temp: String): Unit = {
+    val env = newEnv(s"CStore mutations compaction of snapshot $snapshot for job $job")
+    RunnableCStore.compactMutations(repo, job, props, snapshot, temp)(env)
+  }
+
+  def moveCompactedMutations(repo: String, job: String, props: List[BucketProps], temp: String)
+  : Unit = {
+    val env = newEnv(s"CStore compacted mutations move for job $job")
+    RunnableCStore.moveCompactedMutations(repo, job, props, temp)(env)
+  }
+
+  def compactAll(repo: String, job: String, props: List[BucketProps], temp: String): Unit = {
+    val env = newEnv(s"CStore full compaction for job $job")
+    RunnableCStore.compactAll(repo, job, props, temp)(env)
+  }
+
+  def mapMutations[A: ClassTag](repo: String, job: String, props: List[BucketProps],
+      snapshot: String, mapper: MutationsMapper[A]): Unit = {
+    val env = newEnv(s"CStore mutations mapping of snapshot $snapshot for job $job")
+    val runnable = RunnableCStore.mapMutations(repo, job, props, snapshot, mapper)
+    runnable(env)
+  }
+
+  private def newEnv(appName: String): Env = {
+    val conf = new SparkConf().setAppName(appName)
+    val sparkCtx = new SparkContext(conf)
+    val sqlCtx = new SQLContext(sparkCtx)
+    val fs = FileSystem.get(sparkCtx.hadoopConfiguration)
+    Env(conf, sparkCtx, sqlCtx, fs)
+  }
+}
+
+object RunnableCStore extends LazyLogging {
+  def compactFilters(repo: String, job: String, props: List[BucketProps], temp: String)
+  : Runnable[Unit] = {
+    Runnable(env => {
+      logger.info(s"Begin compactFilters() request")
+      logger.info(s"repo: $repo, job: $job, props: $props, temp: $temp")
+
+      import twolevel.FilterCompactor._
+
+      MIterable(env.conf, props).map({ case (bucket, pgid) =>
+        logger.info(s"($bucket, $pgid): Compacting filter")
+        compact(PGroup[Filters](repo, job, bucket, pgid), Mainline(), temp)(env)
+      })
+
+      MIterable(env.conf, props).map({ case (bucket, pgid) =>
+        logger.info(s"($bucket, $pgid): Moving compacted filter")
+        move(PGroup[Filters](repo, job, bucket, pgid), temp)(env)
+        logger.info(s"($bucket, $pgid): Cleaning up")
+        cleanup(PGroup[Filters](repo, job, bucket, pgid))(env)
+      })
+
+      logger.info(s"End compactFilters() request")
+    })
+  }
+
+  def compactMutations(repo: String, job: String, props: List[BucketProps], snapshot: String,
+      temp: String): Runnable[Unit] = {
+    Runnable(env => {
+      logger.info(s"Begin compactMutations() request")
+      logger.info(s"repo: $repo, job: $job, props: $props, snapshot: $snapshot, temp: $temp")
+
+      import twolevel.MutationsCompactor._
+      MIterable(env.conf, props).map({ case (bucket, pgid) =>
+        logger.info(s"($bucket, $pgid): Compacting mutations")
+        compact(PGroup[Mutations](repo, job, bucket, pgid), Snapshot(snapshot), temp)(env)
+      })
+
+      logger.info(s"End compactMutations() request")
+    })
+  }
+
+  def moveCompactedMutations(repo: String, job: String, props: List[BucketProps], temp: String)
+  : Runnable[Unit] = {
+    Runnable(env => {
+      logger.info(s"Begin moveCompactMutations() request")
+      logger.info(s"repo: $repo, job: $job, props: $props, temp: $temp")
+
+      import twolevel.MutationsCompactor._
+      MIterable(env.conf, props).map({ case (bucket, pgid) =>
+        logger.info(s"($bucket, $pgid): Moving compacted mutations")
+        move(PGroup[Mutations](repo, job, bucket, pgid), temp)(env)
+        logger.info(s"($bucket, $pgid): Cleaning up")
+        cleanup(PGroup[Mutations](repo, job, bucket, pgid))(env)
+      })
+
+      logger.info(s"End moveCompactedMutations() request")
+    })
+  }
+
+  def compactAll(repo: String, job: String, props: List[BucketProps], temp: String)
+  : Runnable[Unit] = {
+    Runnable(env => {
+      logger.info(s"Begin compactAll() request")
+      logger.info(s"repo: $repo, job: $job, props: $props, temp: $temp")
+
+      import twolevel.FullCompactor._
+
+      MIterable(env.conf, props).map({ case (bucket, pgid) =>
+        logger.info(s"($bucket, $pgid): Compacting filters and mutations")
+        compact(PGroup[All](repo, job, bucket, pgid), Mainline(), temp)(env)
+      })
+
+      MIterable(env.conf, props).map({ case (bucket, pgid) =>
+        logger.info(s"($bucket, $pgid): Moving compacted filters and mutations")
+        move(PGroup[All](repo, job, bucket, pgid), temp)(env)
+        logger.info(s"($bucket, $pgid): Cleaning up")
+        cleanup(PGroup[All](repo, job, bucket, pgid))(env)
+      })
+
+      logger.info(s"End compactAll() request")
+    })
+  }
+
+  /** "Maps" mutations from a snapshot using the given function (a callback) potentially
+    * transforming it to something else.
+    *
+    * Will be used by the recovery, masking and sampling agents.
+    *
+    * @param repo UUID of the data repository
+    * @param job ID of the job
+    * @param props A list of [[BucketProps]] objects describing the buckets involved
+    * @param snapshot The specific snapshot to use for reading mutations
+    * @param mapper An instance of an[[com.talena.agents.couchbase.mstore.MutationsMapper]] derived
+    *               class that will do the actual transformation of the mutations.
+    * @return The transformed mutations as a [[MappedMutations]] object of type A
+    */
+  def mapMutations[A: ClassTag](repo: String, job: String, props: List[BucketProps],
+      snapshot: String, mapper: MutationsMapper[A]): Runnable[Unit] = {
+    Runnable(env => {
+      logger.info(s"Begin mapMutations() request")
+      logger.info(s"repo: $repo, job: $job, props: $props, snapshot: $snapshot")
+
+      import twolevel.CompactedMutationsReader._
+      MIterable(env.conf, props).map({ case (bucket, pgid) =>
+        val pg = PGroup[Mutations](repo, job, bucket, pgid)
+        val runnable = for {
+          rdd <- read(pg, Snapshot(snapshot))
+          mappedRDD = rdd.mapPartitions[A]({ partition =>
+              mapper.setup()
+
+              val mappedPartition = for {
+                mutation <- partition
+              } yield mapper.map(mutation)
+
+              mapper.teardown()
+              mappedPartition
+            }, preservesPartitioning = true)
+        } yield mappedRDD
+
+        runnable(env)
+      })
+
+      logger.info(s"End mapMutations() request")
+    })
+  }
 }

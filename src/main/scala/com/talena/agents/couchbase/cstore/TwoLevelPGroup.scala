@@ -35,12 +35,7 @@ object twolevel extends LazyLogging {
 
     override def move(pg: PGroup[Filters], from: String): Runnable[Unit] = {
       Runnable(env => {
-        val ext = CStoreProps.FilterFileExtension(env.conf)
-        val fullFrom = l1.prefixedPath(pg, from) + ext
-        val fullTo = l1.path(pg) + ext
-        logger.info(s"Moving compacted L1 filter for $pg from $fullFrom to $fullTo")
-
-        env.fs.rename(new Path(fullFrom), new Path(fullTo))
+        moveCompacted(env, CStoreProps.FilterFileExtension(env.conf), pg, from)
       })
     }
 
@@ -69,7 +64,9 @@ object twolevel extends LazyLogging {
     }
 
     override def move(pg: PGroup[Mutations], from: String): Runnable[Unit] = {
-      Runnable(env => { println("move") })
+      Runnable(env => {
+        moveCompacted(env, CStoreProps.MutationsFileExtension(env.conf), pg, from)
+      })
     }
 
     override def cleanup(pg: PGroup[Mutations]): Runnable[Unit] = {
@@ -103,7 +100,10 @@ object twolevel extends LazyLogging {
     }
 
     override def move(pg: PGroup[All], from: String): Runnable[Unit] = {
-      Runnable(env => { println("move") })
+      Runnable(env => {
+        moveCompacted(env, CStoreProps.MutationsFileExtension(env.conf), pg, from)
+        moveCompacted(env, CStoreProps.FilterFileExtension(env.conf), pg, from)
+      })
     }
 
     override def cleanup(pg: PGroup[All]): Runnable[Unit] = {
@@ -128,7 +128,7 @@ object twolevel extends LazyLogging {
 
   private def compactL1Filter(env: Env, pg: PGroup[_], l0Path: String, l1Path: String)
   : Transformable[RDD[FilterTuple]] = {
-    logger.info(s"L0 location: $l0, L1 location: $l1Path")
+    logger.info(s"L0 location: $l0Path, L1 location: $l1Path")
 
     val f0 = readOrAbort[FilterTuple](l0Path, s"L0 filter file missing for $pg")
     val f1 = readOrGetEmpty[FilterTuple](l1Path)
@@ -145,6 +145,14 @@ object twolevel extends LazyLogging {
     val m1 = readOrAbort[MutationTuple](path, s"L1 mutations files missing for $pg")
 
     Pipelines.compactMutations(m1(env), f1(env))
+  }
+
+  private def moveCompacted(env: Env, ext: String, pg: PGroup[_], from: String): Unit = {
+    val fullFrom = l1.prefixedPath(pg, from) + ext
+    val fullTo = l1.path(pg) + ext
+    logger.info(s"Moving compacted file for $pg from $fullFrom to $fullTo")
+
+    env.fs.rename(new Path(fullFrom), new Path(fullTo))
   }
 }
 
