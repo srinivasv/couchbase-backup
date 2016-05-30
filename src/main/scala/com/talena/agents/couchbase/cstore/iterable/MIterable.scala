@@ -23,15 +23,15 @@ import org.apache.spark.SparkConf
   *   exploit parallelism within each bucket.
   *
   * @param conf A reference to an active Spark configuration object.
-  * @param bucketProps A list of [[com.talena.agents.couchbase.mstore.BucketProps]] objects over
-  *                    which to iterate.
+  * @param buckets A list of [[com.talena.agents.couchbase.mstore.Bucket]] objects over which to
+  *                iterate.
   */
-abstract class MIterable(conf: SparkConf, bucketProps: List[BucketProps])
+abstract class MIterable(conf: SparkConf, buckets: List[Bucket])
 extends Iterable[(String, String)] with LazyLogging {
   /** Creates an iterator for each bucket in bucketProps and stores them as a list of iterators */
-  protected val buckets = bucketProps.map({ b =>
+  protected val pgroups = buckets.map({ b =>
     val iter = Iterator.iterate((b.name, 1))({ case (_, p) => (b.name, p + 1) })
-    iter.takeWhile(_._2 <= b.numPartitionGroups)
+    iter.takeWhile(_._2 <= b.numPGroups)
   })
 }
 
@@ -41,7 +41,7 @@ extends Iterable[(String, String)] with LazyLogging {
   * The SequentialIterable is the current default implementation that is chosen.
   */
 object MIterable {
-  def apply(conf: SparkConf, buckets: List[BucketProps]): MIterable = {
+  def apply(conf: SparkConf, buckets: List[Bucket]): MIterable = {
     CStoreProps.Iterable(conf) match {
       case "SequentialIterable" => new SequentialIterable(conf, buckets)
       case unsupported => throw new IllegalArgumentException(

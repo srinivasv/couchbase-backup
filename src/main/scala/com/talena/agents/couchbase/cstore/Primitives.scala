@@ -17,7 +17,7 @@ import org.apache.spark.sql.SQLContext
 import scala.collection.Map
 
 case class Transformable[A](a: A) {
-  def get() = a
+  def get = a
   def map[B](f: A => B): Transformable[B] = Transformable(f(a))
   def flatMap[B](f: A => Transformable[B]): Transformable[B] = f(a)
   def withFilter[B](p: A => B): Transformable[B] = Transformable(p(a))
@@ -78,7 +78,7 @@ object primitives extends LazyLogging {
   with Writable[MutationTuple] {
     override def read(path: String): Runnable[Option[RDD[MutationTuple]]] = {
       Runnable(env => {
-        val fullPath = path + CStoreProps.MutationsFileExtension(env.conf)
+        val fullPath = path + ext(env.conf)
         Utils.listFiles(env.fs, new Path(fullPath))
           .map(_ => env.sparkCtx.sequenceFile[NullWritable, MutationTuple](fullPath)
             .map({ case (_, v) => v }))
@@ -94,14 +94,16 @@ object primitives extends LazyLogging {
     }
 
     override def write(a: RDD[MutationTuple], path: String): Runnable[Unit] = {
-      Runnable(_ => a.map(m => (NullWritable.get(), m)).saveAsSequenceFile(path))
+      Runnable(env => a.map(m => (NullWritable.get(), m)).saveAsSequenceFile(path + ext(env.conf)))
     }
+
+    private def ext(conf: SparkConf) = CStoreProps.MutationsFileExtension(conf)
   }
 
   implicit object FilterReaderWriter extends Readable[FilterTuple] with Writable[FilterTuple] {
     override def read(path: String): Runnable[Option[RDD[FilterTuple]]] = {
       Runnable(env => {
-        val fullPath = path + CStoreProps.FilterFileExtension(env.conf)
+        val fullPath = path + ext(env.conf)
         Utils.listFiles(env.fs, new Path(fullPath))
           .map(_ => env.sparkCtx.sequenceFile[NullWritable, FilterTuple](fullPath)
             .map({ case (_, v) => v }))
@@ -117,14 +119,16 @@ object primitives extends LazyLogging {
     }
 
     override def write(a: RDD[FilterTuple], path: String): Runnable[Unit] = {
-      Runnable(_ => a.map(m => (NullWritable.get(), m)).saveAsSequenceFile(path))
+      Runnable(env => a.map(m => (NullWritable.get(), m)).saveAsSequenceFile(path + ext(env.conf)))
     }
+
+    private def ext(conf: SparkConf) = CStoreProps.FilterFileExtension(conf)
   }
 
   implicit object RBLogReader extends Readable[RBLogTuple] {
     override def read(path: String): Runnable[Option[RDD[RBLogTuple]]] = {
       Runnable(env => {
-        val fullPath = path + CStoreProps.RBLogFileExtension(env.conf)
+        val fullPath = path + ext(env.conf)
         Utils.listFiles(env.fs, new Path(fullPath))
           .map(_ => env.sparkCtx.sequenceFile[NullWritable, RBLogTuple](fullPath)
             .map({ case (_, v) => v }))
@@ -138,6 +142,8 @@ object primitives extends LazyLogging {
     override def readOrAbort(path: String, msg: String): Runnable[RDD[RBLogTuple]] = {
       _readOrAbort[RBLogTuple](read(path), s"$msg: $path")
     }
+
+    private def ext(conf: SparkConf) = CStoreProps.RBLogFileExtension(conf)
   }
 
   implicit object FilterDeduplicator extends Deduplicable[FilterTuple] {
