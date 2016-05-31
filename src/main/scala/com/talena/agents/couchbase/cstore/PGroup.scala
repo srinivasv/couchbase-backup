@@ -1,6 +1,5 @@
 package com.talena.agents.couchbase.cstore.pgroup
 
-import com.talena.agents.couchbase.core.{CouchbaseLongRecord => MutationTuple}
 import com.talena.agents.couchbase.cstore._
 
 import com.typesafe.scalalogging.LazyLogging
@@ -9,35 +8,35 @@ import org.apache.spark.rdd.RDD
 
 import scala.reflect.ClassTag
 
-sealed trait Type
-case class Filters() extends Type
-case class Mutations() extends Type
-case class All() extends Type
-
-case class PGroup[A <: Type](bucket: String, id: String)
+case class PGroup[A](bucket: String, id: String)
 
 @annotation.implicitNotFound(msg = "${A} is not compactible")
-trait Compactible[A <: Type] {
-  def compact(pg: PGroup[A], from: String, to: String): Runnable[Unit]
-  def move(pg: PGroup[A], from: String, to: String): Runnable[Unit]
+trait Compactible[A] {
+  def needsCompaction(pg: PGroup[A], home: String): Runnable[Boolean]
+  def compactAndPersist(pg: PGroup[A], home: String, temp: String): Runnable[Unit]
+  def moveAndCleanup(pg: PGroup[A], temp: String, home: String): Runnable[Unit]
 }
 
 @annotation.implicitNotFound(msg = "${A} is not readable")
-trait Readable[A <: Type, B] {
-  def read(pg: PGroup[A], from: String): Runnable[RDD[B]]
+trait Readable[A] {
+  def read(pg: PGroup[A], home: String): Runnable[RDD[A]]
 }
 
 object implicits {
-  def compact[A <: Type: Compactible](pg: PGroup[A], from: String, to: String): Runnable[Unit] = {
-    implicitly[Compactible[A]].compact(pg, from, to)
+  def needsCompaction[A: Compactible](pg: PGroup[A], home: String): Runnable[Boolean] = {
+    implicitly[Compactible[A]].needsCompaction(pg, home)
   }
 
-  def move[A <: Type: Compactible](pg: PGroup[A], from: String, to: String): Runnable[Unit] = {
-    implicitly[Compactible[A]].move(pg, from, to)
+  def compactAndPersist[A: Compactible](pg: PGroup[A], home: String, temp: String)
+  : Runnable[Unit] = {
+    implicitly[Compactible[A]].compactAndPersist(pg, home, temp)
   }
 
-  def read[A <: Type, B](pg: PGroup[A], from: String)(implicit ev: Readable[A, B])
-  : Runnable[RDD[B]] = {
-    ev.read(pg, from)
+  def moveAndCleanup[A: Compactible](pg: PGroup[A], temp: String, home: String): Runnable[Unit] = {
+    implicitly[Compactible[A]].moveAndCleanup(pg, temp, home)
+  }
+
+  def read[A: Readable](pg: PGroup[A], home: String): Runnable[RDD[A]] = {
+    implicitly[Readable[A]].read(pg, home)
   }
 }

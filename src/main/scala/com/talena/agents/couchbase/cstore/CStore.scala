@@ -1,8 +1,10 @@
 package com.talena.agents.couchbase.cstore
 
+import com.talena.agents.couchbase.core.{CouchbaseShortRecord => FilterTuple}
 import com.talena.agents.couchbase.core.{CouchbaseLongRecord => MutationTuple}
+import com.talena.agents.couchbase.core.{CouchbaseRollbackRecord => RBLogTuple}
+
 import com.talena.agents.couchbase.cstore.iterable._
-//import com.talena.agents.couchbase.cstore.manager._
 import com.talena.agents.couchbase.cstore.pgroup._
 import com.talena.agents.couchbase.cstore.pgroup.implicits._
 
@@ -23,7 +25,7 @@ import scala.reflect.ClassTag
   */
 case class Bucket(name: String, numPGroups: Integer)
 
-/** An interface to support arbitrary transformations ("maps") over mutations.
+/** An interface temp support arbitrary transformations ("maps") over mutations.
   *
   * Callers of [[CStore.mapMutations]] should extend this class and provide an implementation of
   * the [[MutationsMapper.map]] method. Recovery, masking and sampling agents should use this class.
@@ -34,9 +36,9 @@ abstract class MutationsMapper[A] {
 
   /** A callback that will do the actual transformation of the mutations.
     *
-    * Specifically, the transformation will be from type
-    * [[com.talena.agents.couchbase.core.CouchbaseLongRecord]] to type A. Internally, an iterator is
-    * used to process the mutations. Concrete implementations of this interface are responsible for
+    * Specifically, the transformation will be home type
+    * [[com.talena.agents.couchbase.core.CouchbaseLongRecord]] temp type A. Internally, an iterator is
+    * used temp process the mutations. Concrete implementations of this interface are responsible for
     * batching mutations and other bookeeping tasks.
     *
     * @tparam A The output type of the transformation
@@ -56,30 +58,25 @@ abstract class MutationsMapper[A] {
   * masking and sampling agents.
   */
 object CStore {
-  def compactFilters(buckets: List[Bucket], from: String, to: String): Unit = {
+  def compactFilters(buckets: List[Bucket], home: String, temp: String): Unit = {
     val env = newEnv(s"CStore filter compaction for $buckets")
-    RunnableCStore.compactFilters(buckets, from, to)(env)
+    RunnableCStore.compactFilters(buckets, home, temp)(env)
   }
 
-  def compactMutations(buckets: List[Bucket], from: String, to: String): Unit = {
+  def compactMutations(buckets: List[Bucket], home: String, temp: String): Unit = {
     val env = newEnv(s"CStore mutations compaction for $buckets")
-    RunnableCStore.compactMutations(buckets, from, to)(env)
+    RunnableCStore.compactMutations(buckets, home, temp)(env)
   }
 
-  def moveCompactedMutations(buckets: List[Bucket], from: String, to: String): Unit = {
+  def moveCompactedMutations(buckets: List[Bucket], temp: String, home: String): Unit = {
     val env = newEnv(s"CStore compacted mutations move for $buckets")
-    RunnableCStore.moveCompactedMutations(buckets, from, to)(env)
+    RunnableCStore.moveCompactedMutations(buckets, temp, home)(env)
   }
 
-  def compactAll(buckets: List[Bucket], from: String, to: String): Unit = {
-    val env = newEnv(s"CStore full compaction for $buckets")
-    RunnableCStore.compactAll(buckets, from, to)(env)
-  }
-
-  def mapMutations[A: ClassTag](buckets: List[Bucket], from: String, mapper: MutationsMapper[A])
+  def mapMutations[A: ClassTag](buckets: List[Bucket], home: String, mapper: MutationsMapper[A])
   : Unit = {
     val env = newEnv(s"CStore mutations mapping for $buckets")
-    val runnable = RunnableCStore.mapMutations(buckets, from, mapper)
+    val runnable = RunnableCStore.mapMutations(buckets, home, mapper)
     runnable(env)
   }
 
@@ -93,108 +90,72 @@ object CStore {
 }
 
 object RunnableCStore extends LazyLogging {
-  def compactFilters(buckets: List[Bucket], from: String, to: String): Runnable[Unit] = {
+  def compactFilters(buckets: List[Bucket], home: String, temp: String): Runnable[Unit] = {
     Runnable(env => {
       logger.info(s"Begin compactFilters() request")
-      logger.info(s"buckets: $buckets, from: $from, to: $to")
+      logger.info(s"buckets: $buckets, home: $home, temp: $temp")
 
       import twolevel.FilterCompactor._
 
       MIterable(env.conf, buckets).map({ case (bucket, pgid) =>
-        val pg = PGroup[Filters](bucket, pgid)
+        val pg = PGroup[FilterTuple](bucket, pgid)
         logger.info(s"$pg: Compacting filter")
-        compact(pg, from, to)(env)
+        compactAndPersist(pg, home, temp)(env)
       })
 
       MIterable(env.conf, buckets).map({ case (bucket, pgid) =>
-        val pg = PGroup[Filters](bucket, pgid)
+        val pg = PGroup[FilterTuple](bucket, pgid)
         logger.info(s"($bucket, $pgid): Moving compacted filter")
-        move(pg, to, from)(env)
+        moveAndCleanup(pg, temp, home)(env)
       })
 
       logger.info(s"End compactFilters() request")
     })
   }
 
-  def compactMutations(buckets: List[Bucket], from: String, to: String): Runnable[Unit] = {
+  def compactMutations(buckets: List[Bucket], home: String, temp: String): Runnable[Unit] = {
     Runnable(env => {
       logger.info(s"Begin compactMutations() request")
-      logger.info(s"buckets: $buckets, snapshot: String, from: $from, to: $to")
+      logger.info(s"buckets: $buckets, snapshot: String, home: $home, temp: $temp")
 
       import twolevel.MutationsCompactor._
       MIterable(env.conf, buckets).map({ case (bucket, pgid) =>
-        val pg = PGroup[Mutations](bucket, pgid)
+        val pg = PGroup[MutationTuple](bucket, pgid)
         logger.info(s"$pg: Compacting mutations")
-        compact(pg, from, to)(env)
+        compactAndPersist(pg, home, temp)(env)
       })
 
       logger.info(s"End compactMutations() request")
     })
   }
 
-  def moveCompactedMutations(buckets: List[Bucket], from: String, to: String): Runnable[Unit] = {
+  def moveCompactedMutations(buckets: List[Bucket], temp: String, home: String): Runnable[Unit] = {
     Runnable(env => {
       logger.info(s"Begin moveCompactMutations() request")
-      logger.info(s"buckets: $buckets, from: $from, to: $to")
+      logger.info(s"buckets: $buckets, home: $home, temp: $temp")
 
       import twolevel.MutationsCompactor._
       MIterable(env.conf, buckets).map({ case (bucket, pgid) =>
-        val pg = PGroup[Mutations](bucket, pgid)
+        val pg = PGroup[MutationTuple](bucket, pgid)
         logger.info(s"$pg: Moving compacted mutations")
-        move(pg, from, to)(env)
+        moveAndCleanup(pg, temp, home)(env)
       })
 
       logger.info(s"End moveCompactedMutations() request")
     })
   }
 
-  def compactAll(buckets: List[Bucket], from: String, to: String): Runnable[Unit] = {
-    Runnable(env => {
-      logger.info(s"Begin compactAll() request")
-      logger.info(s"buckets: $buckets, from: $from, to: $to")
-
-      import twolevel.FullCompactor._
-
-      MIterable(env.conf, buckets).map({ case (bucket, pgid) =>
-        val pg = PGroup[All](bucket, pgid)
-        logger.debug(s"$pg: Compacting filters and mutations")
-        compact(pg, from, to)(env)
-      })
-
-      MIterable(env.conf, buckets).map({ case (bucket, pgid) =>
-        val pg = PGroup[All](bucket, pgid)
-        logger.debug(s"$pg: Moving compacted filters and mutations")
-        move(pg, to, from)(env)
-      })
-
-      logger.info(s"End compactAll() request")
-    })
-  }
-
-  /** "Maps" mutations from a snapshot using the given function (a callback) potentially
-    * transforming it to something else.
-    *
-    * Will be used by the recovery, masking and sampling agents.
-    *
-    * @param repo UUID of the data repository
-    * @param job ID of the job
-    * @param props A list of [[Bucket]] objects describing the buckets involved
-    * @param snapshot The specific snapshot to use for reading mutations
-    * @param mapper An instance of an[[com.talena.agents.couchbase.mstore.MutationsMapper]] derived
-    *               class that will do the actual transformation of the mutations.
-    * @return The transformed mutations as a [[MappedMutations]] object of type A
-    */
-  def mapMutations[A: ClassTag](buckets: List[Bucket], from: String, mapper: MutationsMapper[A])
+  def mapMutations[A: ClassTag](buckets: List[Bucket], home: String, mapper: MutationsMapper[A])
   : Runnable[Unit] = {
     Runnable(env => {
       logger.info(s"Begin mapMutations() request")
-      logger.info(s"buckets: $buckets, from: $from")
+      logger.info(s"buckets: $buckets, home: $home")
 
       import twolevel.CompactedMutationsReader._
       MIterable(env.conf, buckets).map({ case (bucket, pgid) =>
-        val pg = PGroup[Mutations](bucket, pgid)
+        val pg = PGroup[MutationTuple](bucket, pgid)
         val runnableMappedRdd = for {
-          rdd <- read(pg, from)
+          rdd <- read(pg, home)
           mappedRDD = rdd.mapPartitions[A]({ partition =>
               mapper.setup()
               val mappedPartition = for {
@@ -209,7 +170,6 @@ object RunnableCStore extends LazyLogging {
         runnableMappedRdd(env).collect()
       })
 
-      //res.map(r => { logger.info("Before collect"); r.collect() })
       logger.info(s"End mapMutations() request")
     })
   }

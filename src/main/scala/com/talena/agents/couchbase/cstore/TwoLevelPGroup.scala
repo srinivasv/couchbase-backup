@@ -1,8 +1,8 @@
 package com.talena.agents.couchbase.cstore.pgroup
 
+import com.talena.agents.couchbase.core.{CouchbaseShortRecord => FilterTuple}
 import com.talena.agents.couchbase.core.{CouchbaseLongRecord => MutationTuple}
 import com.talena.agents.couchbase.core.{CouchbaseRollbackRecord => RBLogTuple}
-import com.talena.agents.couchbase.core.{CouchbaseShortRecord => FilterTuple}
 import com.talena.agents.couchbase.cstore._
 
 import com.typesafe.scalalogging.LazyLogging
@@ -17,131 +17,112 @@ import scala.reflect.ClassTag
 
 object twolevel extends LazyLogging {
   import primitives.{FilterReaderWriter, MutationsReaderWriter, RBLogReader}
-  import primitives.implicits.{readOrAbort, readOrGetEmpty, write}
+  import primitives.implicits.{read, readOrGetEmpty, write}
 
-  implicit object FilterCompactor extends Compactible[Filters] {
-    override def compact(pg: PGroup[Filters], from: String, to: String): Runnable[Unit] = {
+  implicit object FilterCompactor extends Compactible[FilterTuple] {
+    override def needsCompaction(pg: PGroup[FilterTuple], home: String): Runnable[Boolean] = {
       Runnable(env => {
-        val (l0Path, l1Path) = (l0.path(from, pg), l1.path(from, pg))
-        logger.info(s"Compacting L1 filter for $pg")
+        val path = l0.path(home, pg, CStoreProps.FilterFileExtension(env.conf))
+        Utils.listFiles(env.fs, new Path(path)) match {
+          case Some(_) => true
+          case None => false
+        }
+      })
+    }
 
+    override def compactAndPersist(pg: PGroup[FilterTuple], home: String, temp: String)
+    : Runnable[Unit] = {
+      Runnable(env => {
         for {
-          f <- compactFilter(env, l0Path, l1Path)
-          d = l1.path(to, pg)
+          f <- compactFilter(env, pg, home)
+          d = l1.path(temp, pg, CStoreProps.FilterFileExtension(env.conf))
           r = write(f, d)
         } yield r(env)
       })
     }
 
-    override def move(pg: PGroup[Filters], from: String, to: String): Runnable[Unit] = {
+    override def moveAndCleanup(pg: PGroup[FilterTuple], temp: String, home: String)
+    : Runnable[Unit] = {
       Runnable(env => {
-        moveCompacted(env, pg, from, to, CStoreProps.FilterFileExtension(env.conf))
-        env.fs.rename(new Path(l0.path(to, pg) + CStoreProps.MutationsFileExtension(env.conf)),
-          new Path(l1.path(to, pg) + CStoreProps.MutationsFileExtension(env.conf)))
+        val fExt = CStoreProps.FilterFileExtension(env.conf)
+        val mExt = CStoreProps.MutationsFileExtension(env.conf)
+
+        env.fs.rename(new Path(l1.path(temp, pg, fExt)), new Path(l1.path(home, pg, fExt)))
+        env.fs.rename(new Path(l0.path(home, pg, mExt)), new Path(l1.path(home, pg, mExt)))
+        env.fs.delete(new Path(l0.path(home, pg, ".*")), true)
       })
     }
   }
 
-  implicit object MutationsCompactor extends Compactible[Mutations] {
-    override def compact(pg: PGroup[Mutations], from: String, to: String): Runnable[Unit] = {
+  implicit object MutationsCompactor extends Compactible[MutationTuple] {
+    override def needsCompaction(pg: PGroup[MutationTuple], home: String): Runnable[Boolean] = {
       Runnable(env => {
-        val l1Path = l1.path(from, pg)
-        mutationsCompactionCheck(env, l1Path)
-          .filter({ case(a, t) => a.length > t })
-          .map({ case(_, t) =>
-            logger.info(s"Compacting L1 mutations for $pg. Threshold is $t files")
-            for {
-              m <- compactMutations(env, l1Path)
-              d = l1.path(to, pg)
-              r = write(m, d)
-            } yield r(env)
-          })
-          .getOrElse(logger.info(s"Skipping compaction for $pg"))
+        val path = l1.path(home, pg, CStoreProps.MutationsFileExtension(env.conf))
+        val threshold = CStoreProps.TwoLevelPGroupL1CompactionThreshold(env.conf).toInt
+
+        Utils.listFiles(env.fs, new Path(path))
+          .filter(a => a.length > threshold)
+          .map(_ => true)
+          .getOrElse(false)
       })
     }
 
-    override def move(pg: PGroup[Mutations], from: String, to: String): Runnable[Unit] = {
+    override def compactAndPersist(pg: PGroup[MutationTuple], home: String, temp: String)
+    : Runnable[Unit] = {
       Runnable(env => {
-        moveCompacted(env, pg, from, to, CStoreProps.MutationsFileExtension(env.conf))
-      })
-    }
-  }
-
-  implicit object FullCompactor extends Compactible[All] {
-    override def compact(pg: PGroup[All], from: String, to: String): Runnable[Unit] = {
-      Runnable(env => {
-        val (l0Path, l1Path) = (l0.path(from, pg), l1.path(from, pg))
-        logger.info(s"Compacting L1 filter for $pg")
-
-        val res = for {
-          f <- compactFilter(env, l0Path, l1Path)
-          d = l1.path(from, pg)
-          rf = write(f, d)
-
-          _ = mutationsCompactionCheck(env, l1Path)
-                .filter({ case(a, t) => a.length > t })
-                .map({ case(_, t) =>
-                  logger.info(s"Compacting L1 mutations for $pg. Threshold is $t files")
-                  for {
-                    m <- compactMutations(env, l1Path)
-                    rm = write(m, d)
-                  } yield rm(env)
-                })
-                .getOrElse(logger.info(s"Skipping compaction for $pg"))
-        } yield rf(env)
+        for {
+          m <- compactMutations(env, pg, home)
+          d = l1.path(temp, pg, CStoreProps.MutationsFileExtension(env.conf))
+          r = write(m, d)
+        } yield r(env)
       })
     }
 
-    override def move(pg: PGroup[All], from: String, to: String): Runnable[Unit] = {
+    override def moveAndCleanup(pg: PGroup[MutationTuple], temp: String, home: String)
+    : Runnable[Unit] = {
       Runnable(env => {
-        moveCompacted(env, pg, from, to, CStoreProps.MutationsFileExtension(env.conf))
-        moveCompacted(env, pg, from, to, CStoreProps.FilterFileExtension(env.conf))
+        val mExt = CStoreProps.MutationsFileExtension(env.conf)
+        env.fs.rename(new Path(l1.path(temp, pg, mExt)), new Path(l1.path(home, pg, mExt)))
       })
     }
   }
 
-  implicit object CompactedMutationsReader extends Readable[Mutations, MutationTuple] {
-    override def read(pg: PGroup[Mutations], from: String): Runnable[RDD[MutationTuple]] = {
-      Runnable(env => {
-        val l1Path = l1.path(from, pg)
-        compactMutations(env, l1Path).get
-      })
+  implicit object CompactedMutationsReader extends Readable[MutationTuple] {
+    override def read(pg: PGroup[MutationTuple], home: String): Runnable[RDD[MutationTuple]] = {
+      Runnable(env => compactMutations(env, pg, home).get)
     }
   }
 
-  private def compactFilter(env: Env, l0Path: String, l1Path: String)
+  private def compactFilter(env: Env, pg: PGroup[FilterTuple], home: String)
   : Transformable[RDD[FilterTuple]] = {
-    logger.info(s"L0 location: $l0Path, L1 location: $l1Path")
+    val fExt = CStoreProps.FilterFileExtension(env.conf)
+    val rExt = CStoreProps.RBLogFileExtension(env.conf)
 
-    val f0 = readOrAbort[FilterTuple](l0Path, s"L0 filter file missing: $l0Path")
-    val f1 = readOrGetEmpty[FilterTuple](l1Path)
-    val r0 = readOrGetEmpty[RBLogTuple](l0Path)
+    val f0Path = l0.path(home, pg, fExt)
+    val f1Path = l1.path(home, pg, fExt)
+    val r0Path = l0.path(home, pg, rExt)
+    logger.info(s"f0Path: $f0Path, f1Path: $f1Path, r0Path: $r0Path")
+
+    val f0 = read[FilterTuple](f0Path)
+    val f1 = readOrGetEmpty[FilterTuple](f1Path)
+    val r0 = readOrGetEmpty[RBLogTuple](r0Path)
 
     Pipelines.compactFilter(f1(env), f0(env), r0(env))
   }
 
-  private def compactMutations(env: Env, path: String): Transformable[RDD[MutationTuple]] = {
-    logger.info(s"L1 location: $path")
+  private def compactMutations(env: Env, pg: PGroup[MutationTuple], home: String)
+  : Transformable[RDD[MutationTuple]] = {
+    val fExt = CStoreProps.FilterFileExtension(env.conf)
+    val mExt = CStoreProps.MutationsFileExtension(env.conf)
 
-    val f1 = readOrAbort[FilterTuple](path, s"L1 filter file missing: $path")
-    val m1 = readOrAbort[MutationTuple](path, s"L1 mutations files missing: $path")
+    val f1Path = l1.path(home, pg, fExt)
+    val m1Path = l1.path(home, pg, mExt)
+    logger.info(s"f1Path: $f1Path, m1Path: $m1Path")
+
+    val f1 = read[FilterTuple](f1Path)
+    val m1 = read[MutationTuple](m1Path)
 
     Pipelines.compactMutations(m1(env), f1(env))
-  }
-
-  private def moveCompacted(env: Env, pg: PGroup[_], from: String, to: String, ext: String)
-  : Unit = {
-    val fullFrom = l1.path(from, pg) + ext
-    val fullTo = l1.path(to, pg) + ext
-    logger.info(s"Moving compacted file from $fullFrom to $fullTo")
-
-    env.fs.rename(new Path(fullFrom), new Path(fullTo))
-  }
-
-  private def mutationsCompactionCheck(env: Env, path: String): Option[(Array[FileStatus], Int)] = {
-    val fullPath = path + CStoreProps.MutationsFileExtension(env.conf)
-    val threshold = CStoreProps.TwoLevelPGroupL1CompactionThreshold(env.conf).toInt
-    Utils.listFiles(env.fs, new Path(fullPath)).map(a => (a, threshold))
   }
 }
 
@@ -187,8 +168,8 @@ private object Pipelines {
 }
 
   sealed trait level {
-    def path(base: String, pg: PGroup[_]) =
-      List(base, pg.bucket, this.toString, pg.id).mkString("", "/", "")
+    def path(base: String, pg: PGroup[_], ext: String) =
+      List(base, pg.bucket, this.toString, pg.id).mkString("", "/", "") + ext
   }
   case object l0 extends level
   case object l1 extends level
