@@ -92,22 +92,23 @@ object CStore {
 object RunnableCStore extends LazyLogging {
   def compactFilters(buckets: List[Bucket], home: String, temp: String): Runnable[Unit] = {
     Runnable(env => {
+      import twolevel.FilterCompactor._
+
       logger.info(s"Begin compactFilters() request")
       logger.info(s"buckets: $buckets, home: $home, temp: $temp")
 
-      import twolevel.FilterCompactor._
-
-      MIterable(env.conf, buckets).map({ case (bucket, pgid) =>
-        val pg = PGroup[FilterTuple](bucket, pgid)
-        logger.info(s"$pg: Compacting filter")
-        compactAndPersist(pg, home, temp)(env)
-      })
-
-      MIterable(env.conf, buckets).map({ case (bucket, pgid) =>
-        val pg = PGroup[FilterTuple](bucket, pgid)
-        logger.info(s"($bucket, $pgid): Moving compacted filter")
-        moveAndCleanup(pg, temp, home)(env)
-      })
+      MIterable(env.conf, buckets)
+        .map({ case (bucket, pgid) => PGroup[FilterTuple](bucket, pgid) })
+        .filter(pg => needsCompaction(pg, home)(env))
+        .map(pg => {
+          logger.info(s"$pg: Compacting filter")
+          compactAndPersist(pg, home, temp)(env)
+          pg
+        })
+        .map(pg => {
+          logger.info(s"$pg: Moving compacted filter files and cleaning up")
+          moveAndCleanup(pg, temp, home)(env)
+        })
 
       logger.info(s"End compactFilters() request")
     })
@@ -115,15 +116,18 @@ object RunnableCStore extends LazyLogging {
 
   def compactMutations(buckets: List[Bucket], home: String, temp: String): Runnable[Unit] = {
     Runnable(env => {
+      import twolevel.MutationsCompactor._
+
       logger.info(s"Begin compactMutations() request")
       logger.info(s"buckets: $buckets, snapshot: String, home: $home, temp: $temp")
 
-      import twolevel.MutationsCompactor._
-      MIterable(env.conf, buckets).map({ case (bucket, pgid) =>
-        val pg = PGroup[MutationTuple](bucket, pgid)
-        logger.info(s"$pg: Compacting mutations")
-        compactAndPersist(pg, home, temp)(env)
-      })
+      MIterable(env.conf, buckets)
+        .map({ case (bucket, pgid) => PGroup[MutationTuple](bucket, pgid) })
+        .filter(pg => needsCompaction(pg, home)(env))
+        .map(pg => {
+          logger.info(s"$pg: Compacting mutations")
+          compactAndPersist(pg, home, temp)(env)
+        })
 
       logger.info(s"End compactMutations() request")
     })
@@ -131,15 +135,18 @@ object RunnableCStore extends LazyLogging {
 
   def moveCompactedMutations(buckets: List[Bucket], temp: String, home: String): Runnable[Unit] = {
     Runnable(env => {
+      import twolevel.MutationsCompactor._
+
       logger.info(s"Begin moveCompactMutations() request")
       logger.info(s"buckets: $buckets, home: $home, temp: $temp")
 
-      import twolevel.MutationsCompactor._
-      MIterable(env.conf, buckets).map({ case (bucket, pgid) =>
-        val pg = PGroup[MutationTuple](bucket, pgid)
-        logger.info(s"$pg: Moving compacted mutations")
-        moveAndCleanup(pg, temp, home)(env)
-      })
+      MIterable(env.conf, buckets)
+        .map({ case (bucket, pgid) => PGroup[MutationTuple](bucket, pgid) })
+        .filter(pg => needsCompaction(pg, home)(env))
+        .map(pg => {
+          logger.info(s"$pg: Moving compacted mutations and cleaning up")
+          moveAndCleanup(pg, temp, home)(env)
+        })
 
       logger.info(s"End moveCompactedMutations() request")
     })
@@ -148,27 +155,28 @@ object RunnableCStore extends LazyLogging {
   def mapMutations[A: ClassTag](buckets: List[Bucket], home: String, mapper: MutationsMapper[A])
   : Runnable[Unit] = {
     Runnable(env => {
+      import twolevel.CompactedMutationsReader._
+
       logger.info(s"Begin mapMutations() request")
       logger.info(s"buckets: $buckets, home: $home")
 
-      import twolevel.CompactedMutationsReader._
-      MIterable(env.conf, buckets).map({ case (bucket, pgid) =>
-        val pg = PGroup[MutationTuple](bucket, pgid)
-        val runnableMappedRdd = for {
-          rdd <- read(pg, home)
-          mappedRDD = rdd.mapPartitions[A]({ partition =>
-              mapper.setup()
-              val mappedPartition = for {
-                mutation <- partition
-              } yield mapper.map(mutation)
-              mapper.teardown()
+      MIterable(env.conf, buckets)
+        .map({ case (bucket, pgid) => PGroup[MutationTuple](bucket, pgid) })
+        .map(pg => {
+          val runnableMappedRdd = for {
+            rdd <- read(pg, home)
+            mappedRDD = rdd.mapPartitions[A]({ partition =>
+                mapper.setup()
+                val mappedPartition = for {
+                  mutation <- partition
+                } yield mapper.map(mutation)
+                mapper.teardown()
 
-              mappedPartition
-            }, preservesPartitioning = true)
-        } yield mappedRDD
-
-        runnableMappedRdd(env).collect()
-      })
+                mappedPartition
+              }, preservesPartitioning = true)
+          } yield mappedRDD
+          runnableMappedRdd(env).collect()
+        })
 
       logger.info(s"End mapMutations() request")
     })
