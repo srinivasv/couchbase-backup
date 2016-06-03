@@ -23,7 +23,7 @@ import scala.reflect.ClassTag
   * @param name The bucket's name.
   * @param numPartitionGroups The number of partitionGroups in the bucket.
   */
-case class Bucket(name: String, numPGroups: Integer)
+case class Bucket(name: String, numPartitions: Integer, numPGroups: Integer)
 
 /** An interface temp support arbitrary transformations ("maps") over mutations.
   *

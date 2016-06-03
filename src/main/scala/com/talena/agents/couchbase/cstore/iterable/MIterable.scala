@@ -29,9 +29,10 @@ import org.apache.spark.SparkConf
 abstract class MIterable(conf: SparkConf, buckets: List[Bucket])
 extends Iterable[(String, String)] with LazyLogging {
   /** Creates an iterator for each bucket in bucketProps and stores them as a list of iterators */
-  protected val pgroups = buckets.map({ b =>
-    val iter = Iterator.iterate((b.name, 1))({ case (_, p) => (b.name, p + 1) })
-    iter.takeWhile(_._2 <= b.numPGroups)
+  protected val pgroups = buckets.map(b => {
+    Iterator.iterate(0)(p => p + 1).take(b.numPGroups)
+      .map(p => (p * b.numPGroups, (p + 1) * b.numPGroups - 1))
+      .map({ case (low, high) => (b.name, s"($low-$high)") })
   })
 }
 

@@ -12,7 +12,7 @@ import scala.reflect.ClassTag;
 
 public class RestoreExample extends MutationsMapper<Void> {
   public void restore() {
-    List buckets = getBuckets(new Bucket("sales", 1024));
+    List buckets = getBuckets(new Bucket("sales", 1024, 1024));
     ClassTag<Void> tag = scala.reflect.ClassTag$.MODULE$.apply(Void.class);
     CStore.mapMutations(buckets, "/Production/SalesBackup/20161229", this, tag);
   }

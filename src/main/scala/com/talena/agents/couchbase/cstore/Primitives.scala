@@ -78,7 +78,11 @@ object primitives extends LazyLogging {
     }
 
     override def readOrGetEmpty(path: String): Runnable[RDD[FilterTuple]] = {
-      Runnable(env => env.sparkCtx.emptyRDD[FilterTuple])
+      Runnable(env => {
+        Utils.listFiles(env.fs, new Path(path))
+          .map(_ => read(path)(env))
+          .getOrElse(env.sparkCtx.emptyRDD[FilterTuple])
+      })
     }
 
     override def write(a: RDD[FilterTuple], path: String): Runnable[Unit] = {
@@ -95,7 +99,11 @@ object primitives extends LazyLogging {
     }
 
     override def readOrGetEmpty(path: String): Runnable[RDD[MutationTuple]] = {
-      Runnable(env => env.sparkCtx.emptyRDD[MutationTuple])
+      Runnable(env => {
+        Utils.listFiles(env.fs, new Path(path))
+          .map(_ => read(path)(env))
+          .getOrElse(env.sparkCtx.emptyRDD[MutationTuple])
+      })
     }
 
     override def write(a: RDD[MutationTuple], path: String): Runnable[Unit] = {
@@ -113,7 +121,11 @@ object primitives extends LazyLogging {
     }
 
     override def readOrGetEmpty(path: String): Runnable[RDD[RBLogTuple]] = {
-      Runnable(env => env.sparkCtx.emptyRDD[RBLogTuple])
+      Runnable(env => {
+        Utils.listFiles(env.fs, new Path(path))
+          .map(_ => read(path)(env))
+          .getOrElse(env.sparkCtx.emptyRDD[RBLogTuple])
+      })
     }
   }
 

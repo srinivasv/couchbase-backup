@@ -17,6 +17,6 @@ extends MIterable(conf, buckets) {
   override def iterator(): Iterator[(String, String)] = {
     pgroups.tail
       .foldLeft(pgroups.head)((bucket1, bucket2) => bucket1 ++ bucket2)
-      .map({ case (bucket, pgid) => (bucket, pgid.toString) })
+      //.map({ case (bucket, pgid) => (bucket, pgid) })
   }
 }

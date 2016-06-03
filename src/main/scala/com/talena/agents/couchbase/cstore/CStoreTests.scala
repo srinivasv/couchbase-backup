@@ -24,19 +24,25 @@ object CStoreTests extends LazyLogging {
     import primitives.FilterReaderWriter
     import primitives.implicits.read
 
+    logger.info(s"Iteration 1: Compacting L1 filter")
     iter1(env)
     val cf1 = RunnableCStore.compactFilters(buckets, jobDir, tempDir)
     cf1(env)
-    val f1RDD = read(l1.path(jobDir, pg, ".filter"))
-    val f1 = f1RDD(env).collect().deep
-    logger.info(s"Iteration 1: Compacted L1 filter: $f1")
 
+    logger.info(s"Iteration 1: Reading compacted L1 filter from: " + l1.path(jobDir, pg, ".meta"))
+    val f1RDD = read(l1.path(jobDir, pg, ".meta"))
+    val f1 = f1RDD(env).collect().deep
+    logger.info(s"Iteration 1: Compacted L1 filter: " + f1)
+
+    logger.info(s"Iteration 2: Compacting L1 filter")
     iter2(env)
     val cf2 = RunnableCStore.compactFilters(buckets, jobDir, tempDir)
     cf2(env)
-    val f2RDD = read(l1.path(jobDir, pg, ".filter"))
+
+    logger.info(s"Iteration 2: Reading compacted L1 filter from: " + l1.path(jobDir, pg, ".meta"))
+    val f2RDD = read(l1.path(jobDir, pg, ".meta"))
     val f2 = f2RDD(env).collect().deep
-    logger.info(s"Iteration 2: Compacted L1 filter: $f2")
+    logger.info(s"Iteration 2: Compacted L1 filter: " + f2)
 
     cleanup(env)
   }
@@ -69,11 +75,11 @@ object CStoreTests extends LazyLogging {
 
     env.sparkCtx.makeRDD(List(f1, f2, f3))
       .map(k => (NullWritable.get(), k))
-      .saveAsSequenceFile(l0.path(jobDir, pg, ".filter"))
+      .saveAsSequenceFile(l0.path(jobDir, pg, ".meta"))
 
     env.sparkCtx.makeRDD(List(m1, m2, m3))
       .map(k => (NullWritable.get(), k))
-      .saveAsSequenceFile(l0.path(jobDir, pg, ".mutations"))
+      .saveAsSequenceFile(l0.path(jobDir, pg, ".data"))
   }
 
   def iter2(env: Env) = {
@@ -85,11 +91,11 @@ object CStoreTests extends LazyLogging {
 
     env.sparkCtx.makeRDD(List(f1, f2))
       .map(k => (NullWritable.get(), k))
-      .saveAsSequenceFile(l0.path(jobDir, pg, ".filter"))
+      .saveAsSequenceFile(l0.path(jobDir, pg, ".meta"))
 
     env.sparkCtx.makeRDD(List(m1, m2))
       .map(k => (NullWritable.get(), k))
-      .saveAsSequenceFile(l0.path(jobDir, pg, ".mutations"))
+      .saveAsSequenceFile(l0.path(jobDir, pg, ".data"))
   }
 
   def runBackup(env: Env, msg: String, iter: Env => Unit) = {
@@ -116,7 +122,7 @@ object CStoreTests extends LazyLogging {
   }
 
   val bucket = "default"
-  val buckets = List(Bucket(bucket, 1))
+  val buckets = List(Bucket(bucket, 1, 1))
 
   val homeDir = s"/Users/srinivas/tmp"
   val cstoreDir = s"$homeDir/cstore"
@@ -124,5 +130,5 @@ object CStoreTests extends LazyLogging {
   val bucketDir = s"$jobDir/$bucket"
   val tempDir = s"$cstoreDir/tmp"
 
-  val pg = PGroup(bucket, "1")
+  val pg = PGroup(bucket, "(0-0)")
 }

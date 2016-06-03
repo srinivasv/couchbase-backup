@@ -16,7 +16,7 @@ object CStoreProps extends LazyLogging {
   }
 
   case object MutationsFileExtension {
-    def apply(c: SparkConf) = c.get("mstore.mutations.file.extension", ".mutations")
+    def apply(c: SparkConf) = c.get("mstore.mutations.file.extension", ".data")
   }
 
   case object MutationsFileInputFormat {
@@ -28,7 +28,7 @@ object CStoreProps extends LazyLogging {
   }
 
   case object FilterFileExtension {
-    def apply(c: SparkConf) = c.get("mstore.filter.file.extension", ".filter")
+    def apply(c: SparkConf) = c.get("mstore.filter.file.extension", ".meta")
   }
 
   case object FilterFileInputFormat {

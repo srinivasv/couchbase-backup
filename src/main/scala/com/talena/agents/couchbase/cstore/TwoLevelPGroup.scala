@@ -23,10 +23,7 @@ object twolevel extends LazyLogging {
     override def needsCompaction(pg: PGroup[FilterTuple], home: String): Runnable[Boolean] = {
       Runnable(env => {
         val path = l0.path(home, pg, CStoreProps.FilterFileExtension(env.conf))
-        Utils.listFiles(env.fs, new Path(path)) match {
-          case Some(_) => true
-          case None => false
-        }
+        Utils.listFiles(env.fs, new Path(path)).map(_ => true).getOrElse(false)
       })
     }
 
@@ -46,10 +43,18 @@ object twolevel extends LazyLogging {
       Runnable(env => {
         val fExt = CStoreProps.FilterFileExtension(env.conf)
         val mExt = CStoreProps.MutationsFileExtension(env.conf)
+        val rExt = CStoreProps.RBLogFileExtension(env.conf)
 
+        logger.info(s"$pg: Moving compacted filter")
+        env.fs.delete(new Path(l1.path(home, pg, fExt)), true)
         env.fs.rename(new Path(l1.path(temp, pg, fExt)), new Path(l1.path(home, pg, fExt)))
+
+        logger.info(s"$pg: Moving uncompacted mutations")
         env.fs.rename(new Path(l0.path(home, pg, mExt)), new Path(l1.path(home, pg, mExt)))
-        env.fs.delete(new Path(l0.path(home, pg, ".*")), true)
+
+        logger.info(s"$pg: Deleting L0 filter and rblog")
+        env.fs.delete(new Path(l0.path(home, pg, fExt)), true)
+        env.fs.delete(new Path(l0.path(home, pg, rExt)), true)
       })
     }
   }
@@ -82,7 +87,12 @@ object twolevel extends LazyLogging {
     : Runnable[Unit] = {
       Runnable(env => {
         val mExt = CStoreProps.MutationsFileExtension(env.conf)
+
+        logger.info(s"$pg: Moving compacted mutations")
         env.fs.rename(new Path(l1.path(temp, pg, mExt)), new Path(l1.path(home, pg, mExt)))
+
+        logger.info(s"$pg: Deleting compacted L1 mutations")
+        env.fs.delete(new Path(l1.path(home, pg, mExt)))
       })
     }
   }
@@ -138,14 +148,23 @@ private object Pipelines {
       def isValidSeqno: (FilterTuple, Broadcast[Map[(Short, Long), Long]]) => Boolean =
         (f, b) => f.seqNo() < b.value.getOrElse((f.partitionId(), f.uuid()), f.seqNo() + 1)
 
-      for {
-        r0a <- Transformable(r0)
-        r0b <- broadcast(r0a)
-        f0a <- Transformable(f0) if f0a.filter(f => isValidSeqno(f, r0b))
-        f0b <- deduplicate(f0a)
-        f0c <- broadcast(f0b)
-        f1a <- Transformable(f1) if f1a.filter(f => isValidSeqno(f, r0b) && isValidKey(f, f0c))
-      } yield f1a ++ f0b
+      if (r0.isEmpty()) {
+        for {
+          f0a <- Transformable(f0)
+          f0b <- deduplicate(f0a)
+          f0c <- broadcast(f0b)
+          f1a <- Transformable(f1) if f1a.filter(f => isValidKey(f, f0c))
+        } yield f1a ++ f0b
+      } else {
+        for {
+          r0a <- Transformable(r0)
+          r0b <- broadcast(r0a)
+          f0a <- Transformable(f0) if f0a.filter(f => isValidSeqno(f, r0b))
+          f0b <- deduplicate(f0a)
+          f0c <- broadcast(f0b)
+          f1a <- Transformable(f1) if f1a.filter(f => isValidSeqno(f, r0b) && isValidKey(f, f0c))
+        } yield f1a ++ f0b
+      }
     }
   }
 
@@ -169,7 +188,10 @@ private object Pipelines {
 
   sealed trait level {
     def path(base: String, pg: PGroup[_], ext: String) =
-      List(base, pg.bucket, this.toString, pg.id).mkString("", "/", "") + ext
+      List(base, pg.bucket, this.toString, pg.id).mkString("", "/", "") + "*" + ext
+
+    def bucketPath(base: String, bucket: String) =
+      List(base, bucket, this.toString).mkString("", "/", "/")
   }
   case object l0 extends level
   case object l1 extends level
